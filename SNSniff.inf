@@ -12,6 +12,7 @@
 [Packages]
   MdePkg/MdePkg.dec
   ShellPkg/ShellPkg.dec
+  MdeModulePkg/MdeModulePkg.dec
   
 [LibraryClasses]
   UefiApplicationEntryPoint
@@ -24,7 +25,12 @@
   ShellLib
   ShellCEntryLib
   BaseLib
+  FileHandleLib
+  DevicePathLib
 
 [Protocols]
   gEfiShellParametersProtocolGuid
   gEfiShellInterfaceGuid
+  gEfiSimpleFileSystemProtocolGuid
+  gEfiLoadedImageProtocolGuid
+  gEfiDevicePathProtocolGuid
