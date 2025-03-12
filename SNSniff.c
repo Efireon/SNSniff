@@ -18,6 +18,9 @@
 #include <Protocol/LoadedImage.h>
 #include <Protocol/DevicePath.h>
 #include <Guid/GlobalVariable.h>
+#include <Guid/FileInfo.h>
+#include <IndustryStandard/SmBios.h>
+#include <Protocol/Smbios.h>
 
 // Стандартные GUID для переменных
 static EFI_GUID mCustomVarGuid = {
@@ -44,6 +47,10 @@ typedef struct {
 // Максимальная длина для буферов
 #define MAX_BUFFER_SIZE 256
 
+// Определения для типов SMBIOS записей
+#define SMBIOS_TYPE_SYSTEM_INFORMATION    1
+#define SMBIOS_TYPE_BASEBOARD_INFORMATION 2
+
 // Массив известных GUID
 GUID_ENTRY mKnownGuids[] = {
   {&mCustomVarGuid,  L"Custom"},
@@ -63,16 +70,63 @@ typedef enum {
 
 // Структура конфигурации для проверки SN и MAC
 typedef struct {
-  CHAR16    *SerialNumber;          // Ожидаемый серийный номер
-  CHAR16    *MacAddress;            // Ожидаемый MAC-адрес
-  CHAR16    *SerialVarName;         // Имя переменной UEFI с серийным номером
-  CHAR16    *MacVarName;            // Имя переменной UEFI с MAC-адресом
+  CHAR16    *SerialVarName;         // Имя переменной UEFI с серийным номером для прошивки/проверки
+  CHAR16    *MacVarName;            // Имя переменной UEFI с MAC-адресом для проверки
   CHAR16    *AmideEfiPath;          // Путь к AMIDEEFIx64.efi
   BOOLEAN   CheckSn;                // Флаг проверки SN
   BOOLEAN   CheckMac;               // Флаг проверки MAC
+  BOOLEAN   CheckOnly;              // Флаг режима только проверки без прошивки
   EFI_GUID  *SerialVarGuid;         // GUID для переменной с серийным номером
   EFI_GUID  *MacVarGuid;            // GUID для переменной с MAC-адресом
 } CHECK_CONFIG;
+
+// Прототипы функций
+EFI_STATUS
+RebootToBoot (
+  VOID
+  );
+
+EFI_STATUS
+RunAmideefi (
+  IN CONST CHAR16    *AmideEfiPath,
+  IN CONST CHAR16    *SerialNumber
+  );
+
+BOOLEAN
+CheckSerialNumber (
+  IN  CONST CHAR16    *SerialVarName,
+  IN  EFI_GUID        *SerialVarGuid
+  );
+
+EFI_STATUS
+GetSystemSerialNumber (
+  OUT CHAR16    *SystemSerialNumber,
+  IN  UINTN     BufferSize
+  );
+
+EFI_STATUS
+GetBaseBoardSerialNumber (
+  OUT CHAR16    *BaseBoardSerialNumber,
+  IN  UINTN     BufferSize
+  );
+
+EFI_STATUS
+GetSmbiosString (
+  IN  UINT8     StringNumber,
+  IN  CHAR8     *StringTable,
+  OUT CHAR16    *StringBuffer,
+  IN  UINTN     StringBufferSize
+  );
+
+VOID
+PrintSystemInfo (
+  VOID
+  );
+
+EFI_STATUS
+DisplayBaseBoardInfo (
+  VOID
+  );
 
 /**
   Функция для вывода HEX-дампа данных.
@@ -472,222 +526,6 @@ FindAndPrintVariable (
 }
 
 /**
-  Находит EFI файл в текущей директории или указанном пути.
-  
-  @param FileName       Имя файла для поиска
-  @param FilePath       Путь к файлу (если указан)
-  @param FileHandle     Указатель на дескриптор файла (выход)
-  
-  @retval EFI_SUCCESS   Файл найден
-  @retval другое        Ошибка при поиске файла
-**/
-EFI_STATUS
-FindEfiFile (
-  IN  CONST CHAR16                *FileName,
-  IN  CONST CHAR16                *FilePath,
-  OUT EFI_FILE_HANDLE             *FileHandle
-  )
-{
-  EFI_STATUS                      Status;
-  EFI_HANDLE                      *HandleBuffer;
-  UINTN                           HandleCount;
-  UINTN                           Index;
-  EFI_SIMPLE_FILE_SYSTEM_PROTOCOL *FileSystem;
-  EFI_FILE_HANDLE                 Root;
-  CHAR16                          FullPath[MAX_BUFFER_SIZE];
-  
-  // Инициализируем выходной параметр
-  *FileHandle = NULL;
-  
-  // Находим все дескрипторы файловой системы
-  Status = gBS->LocateHandleBuffer (
-                  ByProtocol,
-                  &gEfiSimpleFileSystemProtocolGuid,
-                  NULL,
-                  &HandleCount,
-                  &HandleBuffer
-                  );
-                  
-  if (EFI_ERROR (Status)) {
-    Print (L"Error: Failed to locate file system handles\n");
-    return Status;
-  }
-  
-  // Подготавливаем полный путь к файлу
-  if (FilePath != NULL && StrLen (FilePath) > 0) {
-    // Используем указанный путь
-    StrCpyS (FullPath, MAX_BUFFER_SIZE, FilePath);
-    
-    // Проверяем, нужно ли добавить разделитель
-    if (FilePath[StrLen (FilePath) - 1] != L'\\') {
-      StrCatS (FullPath, MAX_BUFFER_SIZE, L"\\");
-    }
-    
-    // Добавляем имя файла
-    StrCatS (FullPath, MAX_BUFFER_SIZE, FileName);
-  } else {
-    // Используем только имя файла (текущая директория)
-    StrCpyS (FullPath, MAX_BUFFER_SIZE, FileName);
-  }
-  
-  // Перебираем все дескрипторы файловой системы
-  for (Index = 0; Index < HandleCount; Index++) {
-    Status = gBS->HandleProtocol (
-                    HandleBuffer[Index],
-                    &gEfiSimpleFileSystemProtocolGuid,
-                    (VOID **)&FileSystem
-                    );
-                    
-    if (EFI_ERROR (Status)) {
-      continue;
-    }
-    
-    // Открываем корневую директорию
-    Status = FileSystem->OpenVolume (FileSystem, &Root);
-    if (EFI_ERROR (Status)) {
-      continue;
-    }
-    
-    // Пытаемся открыть файл
-    Status = Root->Open (
-                    Root,
-                    FileHandle,
-                    FullPath,
-                    EFI_FILE_MODE_READ,
-                    0
-                    );
-                    
-    Root->Close (Root);
-    
-    if (!EFI_ERROR (Status)) {
-      // Файл найден
-      FreePool (HandleBuffer);
-      return EFI_SUCCESS;
-    }
-  }
-  
-  // Файл не найден
-  Print (L"Error: File '%s' not found\n", FullPath);
-  FreePool (HandleBuffer);
-  return EFI_NOT_FOUND;
-}
-
-/**
-  Запускает внешнюю EFI программу.
-  
-  @param FilePath       Путь к EFI файлу
-  @param Args           Массив аргументов
-  @param ArgCount       Количество аргументов
-  
-  @retval EFI_SUCCESS   Программа успешно выполнена
-  @retval другое        Ошибка при запуске программы
-**/
-EFI_STATUS
-RunEfiProgram (
-  IN CONST CHAR16    *FilePath,
-  IN CHAR16          **Args,
-  IN UINTN           ArgCount
-  )
-{
-  EFI_STATUS                    Status;
-  EFI_HANDLE                    ImageHandle;
-  EFI_DEVICE_PATH_PROTOCOL      *DevicePath;
-  EFI_LOADED_IMAGE_PROTOCOL     *LoadedImage;
-  CHAR16                        *ArgsConcatenated;
-  UINTN                         ArgsSize;
-  UINTN                         Index;
-  
-  // Получаем путь к устройству
-  Status = gBS->LocateProtocol (
-                  &gEfiDevicePathProtocolGuid,
-                  NULL,
-                  (VOID **)&DevicePath
-                  );
-                  
-  if (EFI_ERROR (Status)) {
-    Print (L"Error: Failed to locate device path protocol\n");
-    return Status;
-  }
-  
-  // Загружаем изображение
-  Status = gBS->LoadImage (
-                  FALSE,
-                  gImageHandle,
-                  DevicePath,
-                  (VOID *)FilePath,
-                  StrSize (FilePath),
-                  &ImageHandle
-                  );
-                  
-  if (EFI_ERROR (Status)) {
-    Print (L"Error: Failed to load image '%s'\n", FilePath);
-    return Status;
-  }
-  
-  // Получаем протокол загруженного изображения
-  Status = gBS->HandleProtocol (
-                  ImageHandle,
-                  &gEfiLoadedImageProtocolGuid,
-                  (VOID **)&LoadedImage
-                  );
-                  
-  if (EFI_ERROR (Status)) {
-    Print (L"Error: Failed to get loaded image protocol\n");
-    gBS->UnloadImage (ImageHandle);
-    return Status;
-  }
-  
-  // Подготавливаем аргументы командной строки
-  if (ArgCount > 0) {
-    // Вычисляем размер буфера для аргументов
-    ArgsSize = 0;
-    for (Index = 0; Index < ArgCount; Index++) {
-      ArgsSize += StrSize (Args[Index]) + sizeof (CHAR16); // Для разделителя
-    }
-    
-    // Выделяем память для аргументов
-    ArgsConcatenated = AllocateZeroPool (ArgsSize);
-    if (ArgsConcatenated == NULL) {
-      Print (L"Error: Failed to allocate memory for arguments\n");
-      gBS->UnloadImage (ImageHandle);
-      return EFI_OUT_OF_RESOURCES;
-    }
-    
-    // Объединяем аргументы в одну строку
-    for (Index = 0; Index < ArgCount; Index++) {
-      StrCatS (ArgsConcatenated, ArgsSize / sizeof (CHAR16), Args[Index]);
-      if (Index < ArgCount - 1) {
-        StrCatS (ArgsConcatenated, ArgsSize / sizeof (CHAR16), L" ");
-      }
-    }
-    
-    // Устанавливаем аргументы командной строки
-    LoadedImage->LoadOptions = ArgsConcatenated;
-    LoadedImage->LoadOptionsSize = (UINT32)ArgsSize;
-  }
-  
-  // Запускаем программу
-  Status = gBS->StartImage (
-                  ImageHandle,
-                  NULL,
-                  NULL
-                  );
-                  
-  // Освобождаем память, если были аргументы
-  if (ArgCount > 0) {
-    FreePool (ArgsConcatenated);
-  }
-  
-  if (EFI_ERROR (Status)) {
-    Print (L"Error: Failed to start image '%s'\n", FilePath);
-    gBS->UnloadImage (ImageHandle);
-    return Status;
-  }
-  
-  return EFI_SUCCESS;
-}
-
-/**
   Перезагружает систему с загрузкой через BOOTx64.efi.
   
   @retval EFI_SUCCESS   Команда перезагрузки отправлена
@@ -740,6 +578,577 @@ RebootToBoot (
 }
 
 /**
+  Запускает внешнюю EFI программу через прямую командную строку.
+  
+  @param AmideEfiPath   Путь к AMIDEEFIx64.efi
+  @param SerialNumber   Серийный номер для прошивки
+  
+  @retval EFI_SUCCESS   Программа успешно выполнена
+  @retval другое        Ошибка при запуске программы
+**/
+EFI_STATUS
+RunAmideefi (
+  IN CONST CHAR16    *AmideEfiPath,
+  IN CONST CHAR16    *SerialNumber
+  )
+{
+  CHAR16 CommandLine[MAX_BUFFER_SIZE];
+  EFI_STATUS Status;
+  
+  // Проверяем существование файла
+  if (ShellIsFile((CHAR16*)AmideEfiPath) != EFI_SUCCESS) {
+    Print(L"Error: AMIDEEFIx64.efi not found at '%s'\n", AmideEfiPath);
+    return EFI_NOT_FOUND;
+  }
+  
+  // Формируем командную строку со всеми необходимыми параметрами
+  ZeroMem(CommandLine, sizeof(CommandLine));
+  UnicodeSPrint(CommandLine, sizeof(CommandLine), 
+                L"%s /SS %s /BS %s", 
+                AmideEfiPath, SerialNumber, SerialNumber);
+  
+  Print(L"Executing: %s\n", CommandLine);
+  
+  // Запускаем как отдельную команду через Shell
+  Status = ShellExecute(&gImageHandle, CommandLine, TRUE, NULL, NULL);
+  
+  if (EFI_ERROR(Status)) {
+    Print(L"Error: Failed to execute AMIDEEFIx64.efi: %r\n", Status);
+  } else {
+    Print(L"AMIDEEFIx64.efi executed successfully\n");
+  }
+  
+  return Status;
+}
+
+/**
+  Получает строку из SMBIOS структуры по ее номеру.
+  
+  @param StringNumber   Номер строки в StringTable
+  @param StringTable    Указатель на таблицу строк
+  @param StringBuffer   Буфер для результата
+  @param StringBufferSize Размер буфера
+  
+  @retval EFI_SUCCESS   Строка успешно найдена и скопирована
+  @retval EFI_NOT_FOUND Строка с указанным номером не найдена
+**/
+EFI_STATUS
+GetSmbiosString (
+  IN  UINT8     StringNumber,
+  IN  CHAR8     *StringTable,
+  OUT CHAR16    *StringBuffer,
+  IN  UINTN     StringBufferSize
+  )
+{
+  UINTN  Index;
+  UINT8  CurrentString;
+  
+  if (StringNumber == 0 || StringTable == NULL || StringBuffer == NULL) {
+    return EFI_INVALID_PARAMETER;
+  }
+  
+  // Находим нужную строку в таблице строк
+  CurrentString = 1;
+  while (CurrentString < StringNumber) {
+    if (*StringTable == 0) {
+      CurrentString++;
+      if (CurrentString == StringNumber) {
+        StringTable++;
+        break;
+      }
+    }
+    StringTable++;
+    
+    // Если достигнут конец таблицы строк (два последовательных нуля)
+    if (*StringTable == 0) {
+      return EFI_NOT_FOUND;
+    }
+  }
+  
+  // Копируем строку в буфер с преобразованием в CHAR16
+  for (Index = 0; Index < StringBufferSize - 1 && StringTable[Index] != 0; Index++) {
+    StringBuffer[Index] = (CHAR16)StringTable[Index];
+  }
+  StringBuffer[Index] = 0;
+  
+  return EFI_SUCCESS;
+}
+
+/**
+  Получает серийный номер системы из SMBIOS.
+  
+  @param SystemSerialNumber   Буфер для серийного номера системы
+  @param BufferSize           Размер буфера
+  
+  @retval EFI_SUCCESS         Серийный номер успешно получен
+  @retval другое              Ошибка при получении серийного номера
+**/
+EFI_STATUS
+GetSystemSerialNumber (
+  OUT CHAR16    *SystemSerialNumber,
+  IN  UINTN     BufferSize
+  )
+{
+  EFI_STATUS                Status;
+  EFI_SMBIOS_PROTOCOL       *Smbios;
+  EFI_SMBIOS_HANDLE         SmbiosHandle;
+  EFI_SMBIOS_TABLE_HEADER   *Record;
+  SMBIOS_TABLE_TYPE1        *Type1Record;
+  CHAR8                     *StringTable;
+  
+  // Инициализируем выходной буфер
+  ZeroMem (SystemSerialNumber, BufferSize * sizeof(CHAR16));
+  
+  // Получаем доступ к SMBIOS протоколу
+  Status = gBS->LocateProtocol (
+                &gEfiSmbiosProtocolGuid,
+                NULL,
+                (VOID **)&Smbios
+                );
+                
+  if (EFI_ERROR (Status)) {
+    Print (L"Error: Failed to locate SMBIOS protocol: %r\n", Status);
+    return Status;
+  }
+  
+  // Находим запись с информацией о системе (Type 1)
+  SmbiosHandle = SMBIOS_HANDLE_PI_RESERVED;
+  Status = Smbios->GetNext (Smbios, &SmbiosHandle, NULL, &Record, NULL);
+  
+  while (!EFI_ERROR (Status) && Record->Type != SMBIOS_TYPE_SYSTEM_INFORMATION) {
+    Status = Smbios->GetNext (Smbios, &SmbiosHandle, NULL, &Record, NULL);
+  }
+  
+  if (EFI_ERROR (Status)) {
+    Print (L"Error: System Information record not found in SMBIOS: %r\n", Status);
+    return Status;
+  }
+  
+  // Получаем запись Type 1 (System Information)
+  Type1Record = (SMBIOS_TABLE_TYPE1 *)Record;
+  
+  // Находим таблицу строк (она идет сразу после структуры)
+  StringTable = (CHAR8 *)((UINT8 *)Type1Record + Type1Record->Hdr.Length);
+  
+  // Получаем строку с серийным номером
+  Status = GetSmbiosString (
+             Type1Record->SerialNumber,
+             StringTable,
+             SystemSerialNumber,
+             BufferSize
+             );
+             
+  if (EFI_ERROR (Status)) {
+    Print (L"Error: Failed to get System Serial Number string: %r\n", Status);
+    return Status;
+  }
+  
+  return EFI_SUCCESS;
+}
+
+/**
+  Получает серийный номер материнской платы из SMBIOS.
+  
+  @param BaseBoardSerialNumber  Буфер для серийного номера материнской платы
+  @param BufferSize             Размер буфера
+  
+  @retval EFI_SUCCESS           Серийный номер успешно получен
+  @retval другое                Ошибка при получении серийного номера
+**/
+EFI_STATUS
+GetBaseBoardSerialNumber (
+  OUT CHAR16    *BaseBoardSerialNumber,
+  IN  UINTN     BufferSize
+  )
+{
+  EFI_STATUS                Status;
+  EFI_SMBIOS_PROTOCOL       *Smbios;
+  EFI_SMBIOS_HANDLE         SmbiosHandle;
+  EFI_SMBIOS_TABLE_HEADER   *Record;
+  SMBIOS_TABLE_TYPE2        *Type2Record;
+  CHAR8                     *StringTable;
+  
+  // Инициализируем выходной буфер
+  ZeroMem (BaseBoardSerialNumber, BufferSize * sizeof(CHAR16));
+  
+  // Получаем доступ к SMBIOS протоколу
+  Status = gBS->LocateProtocol (
+                &gEfiSmbiosProtocolGuid,
+                NULL,
+                (VOID **)&Smbios
+                );
+                
+  if (EFI_ERROR (Status)) {
+    Print (L"Error: Failed to locate SMBIOS protocol: %r\n", Status);
+    return Status;
+  }
+  
+  // Находим запись с информацией о материнской плате (Type 2)
+  SmbiosHandle = SMBIOS_HANDLE_PI_RESERVED;
+  Status = Smbios->GetNext (Smbios, &SmbiosHandle, NULL, &Record, NULL);
+  
+  while (!EFI_ERROR (Status) && Record->Type != SMBIOS_TYPE_BASEBOARD_INFORMATION) {
+    Status = Smbios->GetNext (Smbios, &SmbiosHandle, NULL, &Record, NULL);
+  }
+  
+  if (EFI_ERROR (Status)) {
+    Print (L"Error: Baseboard Information record not found in SMBIOS: %r\n", Status);
+    return Status;
+  }
+  
+  // Получаем запись Type 2 (Baseboard Information)
+  Type2Record = (SMBIOS_TABLE_TYPE2 *)Record;
+  
+  // Находим таблицу строк (она идет сразу после структуры)
+  StringTable = (CHAR8 *)((UINT8 *)Type2Record + Type2Record->Hdr.Length);
+  
+  // Получаем строку с серийным номером
+  Status = GetSmbiosString (
+             Type2Record->SerialNumber,
+             StringTable,
+             BaseBoardSerialNumber,
+             BufferSize
+             );
+             
+  if (EFI_ERROR (Status)) {
+    Print (L"Error: Failed to get Baseboard Serial Number string: %r\n", Status);
+    return Status;
+  }
+  
+  return EFI_SUCCESS;
+}
+
+/**
+  Выводит информацию о системе из SMBIOS Type 1 записи.
+**/
+VOID
+PrintSystemInfo (
+  VOID
+  )
+{
+  EFI_STATUS                Status;
+  EFI_SMBIOS_PROTOCOL       *Smbios;
+  EFI_SMBIOS_HANDLE         SmbiosHandle;
+  EFI_SMBIOS_TABLE_HEADER   *Record;
+  SMBIOS_TABLE_TYPE1        *Type1Record;
+  CHAR8                     *StringTable;
+  CHAR16                    TempString[MAX_BUFFER_SIZE];
+  
+  // Получаем доступ к SMBIOS протоколу
+  Status = gBS->LocateProtocol (
+                &gEfiSmbiosProtocolGuid,
+                NULL,
+                (VOID **)&Smbios
+                );
+                
+  if (EFI_ERROR (Status)) {
+    return;
+  }
+  
+  // Находим запись с информацией о системе (Type 1)
+  SmbiosHandle = SMBIOS_HANDLE_PI_RESERVED;
+  Status = Smbios->GetNext (Smbios, &SmbiosHandle, NULL, &Record, NULL);
+  
+  while (!EFI_ERROR (Status) && Record->Type != SMBIOS_TYPE_SYSTEM_INFORMATION) {
+    Status = Smbios->GetNext (Smbios, &SmbiosHandle, NULL, &Record, NULL);
+  }
+  
+  if (EFI_ERROR (Status)) {
+    return;
+  }
+  
+  // Получаем запись Type 1 (System Information)
+  Type1Record = (SMBIOS_TABLE_TYPE1 *)Record;
+  
+  Print (L"\n===== System Information =====\n\n");
+  
+  // Находим таблицу строк (она идет сразу после структуры)
+  StringTable = (CHAR8 *)((UINT8 *)Type1Record + Type1Record->Hdr.Length);
+  
+  // Выводим информацию о производителе
+  if (Type1Record->Manufacturer != 0) {
+    ZeroMem (TempString, sizeof(TempString));
+    GetSmbiosString (Type1Record->Manufacturer, StringTable, TempString, MAX_BUFFER_SIZE);
+    Print (L"Manufacturer: %s\n", TempString);
+  } else {
+    Print (L"Manufacturer: <Not Specified>\n");
+  }
+  
+  // Выводим информацию о продукте
+  if (Type1Record->ProductName != 0) {
+    ZeroMem (TempString, sizeof(TempString));
+    GetSmbiosString (Type1Record->ProductName, StringTable, TempString, MAX_BUFFER_SIZE);
+    Print (L"Product Name: %s\n", TempString);
+  } else {
+    Print (L"Product Name: <Not Specified>\n");
+  }
+  
+  // Выводим информацию о версии
+  if (Type1Record->Version != 0) {
+    ZeroMem (TempString, sizeof(TempString));
+    GetSmbiosString (Type1Record->Version, StringTable, TempString, MAX_BUFFER_SIZE);
+    Print (L"Version: %s\n", TempString);
+  } else {
+    Print (L"Version: <Not Specified>\n");
+  }
+  
+  // Выводим серийный номер
+  if (Type1Record->SerialNumber != 0) {
+    ZeroMem (TempString, sizeof(TempString));
+    GetSmbiosString (Type1Record->SerialNumber, StringTable, TempString, MAX_BUFFER_SIZE);
+    Print (L"Serial Number: %s\n", TempString);
+  } else {
+    Print (L"Serial Number: <Not Specified>\n");
+  }
+  
+  // Выводим UUID если он доступен
+  if (!Type1Record->Uuid.Data1) {
+    Print (L"UUID: <Not Specified>\n");
+  } else {
+    Print (L"UUID: %08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X\n",
+           Type1Record->Uuid.Data1, Type1Record->Uuid.Data2, Type1Record->Uuid.Data3,
+           Type1Record->Uuid.Data4[0], Type1Record->Uuid.Data4[1], Type1Record->Uuid.Data4[2],
+           Type1Record->Uuid.Data4[3], Type1Record->Uuid.Data4[4], Type1Record->Uuid.Data4[5],
+           Type1Record->Uuid.Data4[6], Type1Record->Uuid.Data4[7]);
+  }
+}
+
+/**
+  Выводит подробную информацию о материнской плате из SMBIOS.
+  
+  @retval EFI_SUCCESS         Информация успешно выведена
+  @retval другое              Ошибка при получении информации
+**/
+EFI_STATUS
+DisplayBaseBoardInfo (
+  VOID
+  )
+{
+  EFI_STATUS                Status;
+  EFI_SMBIOS_PROTOCOL       *Smbios;
+  EFI_SMBIOS_HANDLE         SmbiosHandle;
+  EFI_SMBIOS_TABLE_HEADER   *Record;
+  SMBIOS_TABLE_TYPE2        *Type2Record;
+  CHAR8                     *StringTable;
+  CHAR16                    TempString[MAX_BUFFER_SIZE];
+  
+  // Получаем доступ к SMBIOS протоколу
+  Status = gBS->LocateProtocol (
+                &gEfiSmbiosProtocolGuid,
+                NULL,
+                (VOID **)&Smbios
+                );
+                
+  if (EFI_ERROR (Status)) {
+    Print (L"Error: Failed to locate SMBIOS protocol: %r\n", Status);
+    return Status;
+  }
+  
+  // Находим запись с информацией о материнской плате (Type 2)
+  SmbiosHandle = SMBIOS_HANDLE_PI_RESERVED;
+  Status = Smbios->GetNext (Smbios, &SmbiosHandle, NULL, &Record, NULL);
+  
+  while (!EFI_ERROR (Status) && Record->Type != SMBIOS_TYPE_BASEBOARD_INFORMATION) {
+    Status = Smbios->GetNext (Smbios, &SmbiosHandle, NULL, &Record, NULL);
+  }
+  
+  if (EFI_ERROR (Status)) {
+    Print (L"Error: Baseboard Information record not found in SMBIOS: %r\n", Status);
+    return Status;
+  }
+  
+  // Получаем запись Type 2 (Baseboard Information)
+  Type2Record = (SMBIOS_TABLE_TYPE2 *)Record;
+  
+  Print (L"\n===== Baseboard Information =====\n\n");
+  
+  // Находим таблицу строк (она идет сразу после структуры)
+  StringTable = (CHAR8 *)((UINT8 *)Type2Record + Type2Record->Hdr.Length);
+  
+  // Выводим информацию о производителе
+  if (Type2Record->Manufacturer != 0) {
+    ZeroMem (TempString, sizeof(TempString));
+    GetSmbiosString (Type2Record->Manufacturer, StringTable, TempString, MAX_BUFFER_SIZE);
+    Print (L"Manufacturer: %s\n", TempString);
+  } else {
+    Print (L"Manufacturer: <Not Specified>\n");
+  }
+  
+  // Выводим информацию о продукте
+  if (Type2Record->ProductName != 0) {
+    ZeroMem (TempString, sizeof(TempString));
+    GetSmbiosString (Type2Record->ProductName, StringTable, TempString, MAX_BUFFER_SIZE);
+    Print (L"Product Name: %s\n", TempString);
+  } else {
+    Print (L"Product Name: <Not Specified>\n");
+  }
+  
+  // Выводим информацию о версии
+  if (Type2Record->Version != 0) {
+    ZeroMem (TempString, sizeof(TempString));
+    GetSmbiosString (Type2Record->Version, StringTable, TempString, MAX_BUFFER_SIZE);
+    Print (L"Version: %s\n", TempString);
+  } else {
+    Print (L"Version: <Not Specified>\n");
+  }
+  
+  // Выводим серийный номер
+  if (Type2Record->SerialNumber != 0) {
+    ZeroMem (TempString, sizeof(TempString));
+    GetSmbiosString (Type2Record->SerialNumber, StringTable, TempString, MAX_BUFFER_SIZE);
+    Print (L"Serial Number: %s\n", TempString);
+  } else {
+    Print (L"Serial Number: <Not Specified>\n");
+  }
+  
+  // Выводим тег актива
+  if (Type2Record->AssetTag != 0) {
+    ZeroMem (TempString, sizeof(TempString));
+    GetSmbiosString (Type2Record->AssetTag, StringTable, TempString, MAX_BUFFER_SIZE);
+    Print (L"Asset Tag: %s\n", TempString);
+  } else {
+    Print (L"Asset Tag: <Not Specified>\n");
+  }
+  
+  // Выводим особенности платы
+  Print (L"Feature Flags: 0x%02X\n", Type2Record->FeatureFlag);
+  if (Type2Record->FeatureFlag & 0x01) Print (L"  - Hosting Board\n");
+  if (Type2Record->FeatureFlag & 0x02) Print (L"  - Requires Daughter Board\n");
+  if (Type2Record->FeatureFlag & 0x04) Print (L"  - Removable\n");
+  if (Type2Record->FeatureFlag & 0x08) Print (L"  - Replaceable\n");
+  if (Type2Record->FeatureFlag & 0x10) Print (L"  - Hot Swappable\n");
+  
+  // Выводим расположение в шасси
+  if (Type2Record->LocationInChassis != 0) {
+    ZeroMem (TempString, sizeof(TempString));
+    GetSmbiosString (Type2Record->LocationInChassis, StringTable, TempString, MAX_BUFFER_SIZE);
+    Print (L"Location in Chassis: %s\n", TempString);
+  } else {
+    Print (L"Location in Chassis: <Not Specified>\n");
+  }
+  
+  // Выводим тип платы
+  CONST CHAR16 *BoardTypes[] = {
+    L"Unknown",
+    L"Other",
+    L"Server Blade",
+    L"Connectivity Switch",
+    L"System Management Module",
+    L"Processor Module",
+    L"I/O Module",
+    L"Memory Module",
+    L"Daughter Board",
+    L"Motherboard",
+    L"Processor/Memory Module",
+    L"Processor/IO Module",
+    L"Interconnect Board"
+  };
+  
+  UINT8 BoardType = Type2Record->BoardType;
+  if (BoardType < (sizeof(BoardTypes) / sizeof(BoardTypes[0]))) {
+    Print (L"Board Type: %s\n", BoardTypes[BoardType]);
+  } else {
+    Print (L"Board Type: Unknown (%d)\n", BoardType);
+  }
+  
+  // Выводим дополнительную информацию о системе из Type 1
+  PrintSystemInfo();
+  
+  return EFI_SUCCESS;
+}
+
+/**
+  Проверяет, совпадает ли серийный номер из указанной EFI переменной с 
+  серийными номерами в SMBIOS информации.
+  
+  @param SerialVarName    Имя переменной UEFI с серийным номером
+  @param SerialVarGuid    GUID переменной UEFI
+  
+  @retval TRUE            Серийный номер совпадает
+  @retval FALSE           Серийный номер не совпадает или произошла ошибка
+**/
+BOOLEAN
+CheckSerialNumber (
+  IN  CONST CHAR16    *SerialVarName,
+  IN  EFI_GUID        *SerialVarGuid
+  )
+{
+  EFI_STATUS  Status;
+  VOID        *SnVarData = NULL;
+  UINTN       SnVarSize = 0;
+  CHAR16      SnString[MAX_BUFFER_SIZE];
+  CHAR16      SystemSn[MAX_BUFFER_SIZE];
+  CHAR16      BaseBoardSn[MAX_BUFFER_SIZE];
+  BOOLEAN     SnMatches = FALSE;
+  
+  // Получаем серийный номер из переменной UEFI
+  Status = GetVariableData (
+            SerialVarName,
+            SerialVarGuid,
+            &SnVarData,
+            &SnVarSize
+            );
+            
+  if (EFI_ERROR (Status)) {
+    Print (L"Error: Failed to get Serial Number from variable '%s'\n", SerialVarName);
+    return FALSE;
+  }
+  
+  // Конвертируем данные в строку
+  ZeroMem(SnString, sizeof(SnString));
+  
+  // Проверяем формат данных (UCS-2 или ASCII)
+  if (SnVarSize >= 2 && ((CHAR16*)SnVarData)[SnVarSize/2 - 1] == 0) {
+    // Данные в UCS-2 формате
+    StrCpyS(SnString, MAX_BUFFER_SIZE, (CHAR16*)SnVarData);
+  } else {
+    // Предполагаем ASCII формат или бинарные данные, конвертируем в строку
+    for (UINTN i = 0; i < MIN(SnVarSize, MAX_BUFFER_SIZE-1); i++) {
+      SnString[i] = ((UINT8*)SnVarData)[i];
+    }
+    SnString[MIN(SnVarSize, MAX_BUFFER_SIZE-1)] = 0;
+  }
+  
+  // Получаем серийный номер системы из SMBIOS
+  Status = GetSystemSerialNumber(SystemSn, MAX_BUFFER_SIZE);
+  if (!EFI_ERROR(Status)) {
+    Print(L"System Serial Number from SMBIOS: %s\n", SystemSn);
+    
+    // Сравниваем с целевым серийным номером
+    if (StrCmp(SystemSn, SnString) == 0) {
+      Print(L"System Serial Number matches the target value.\n");
+      SnMatches = TRUE;
+    } else {
+      Print(L"System Serial Number does NOT match the target value.\n");
+    }
+  } else {
+    Print(L"Warning: Could not retrieve System Serial Number from SMBIOS.\n");
+  }
+  
+  // Получаем серийный номер материнской платы из SMBIOS
+  Status = GetBaseBoardSerialNumber(BaseBoardSn, MAX_BUFFER_SIZE);
+  if (!EFI_ERROR(Status)) {
+    Print(L"Baseboard Serial Number from SMBIOS: %s\n", BaseBoardSn);
+    
+    // Сравниваем с целевым серийным номером
+    if (StrCmp(BaseBoardSn, SnString) == 0) {
+      Print(L"Baseboard Serial Number matches the target value.\n");
+      SnMatches = TRUE;
+    } else {
+      Print(L"Baseboard Serial Number does NOT match the target value.\n");
+    }
+  } else {
+    Print(L"Warning: Could not retrieve Baseboard Serial Number from SMBIOS.\n");
+  }
+  
+  if (SnVarData != NULL) {
+    FreePool(SnVarData);
+  }
+  
+  return SnMatches;
+}
+
+/**
   Проверяет серийный номер и MAC-адрес, перепрошивает при необходимости.
   
   @param Config    Указатель на конфигурацию проверки
@@ -753,156 +1162,175 @@ CheckAndFlashValues (
   )
 {
   EFI_STATUS  Status;
-  VOID        *SnData = NULL;
-  UINTN       SnSize = 0;
-  VOID        *MacData = NULL;
-  UINTN       MacSize = 0;
+  VOID        *SnVarData = NULL;         // Данные из переменной SerialVarName
+  UINTN       SnVarSize = 0;
+  VOID        *MacVarData = NULL;        // Данные из переменной MacVarName
+  UINTN       MacVarSize = 0;
   BOOLEAN     SnMatches = FALSE;
   BOOLEAN     MacMatches = FALSE;
   UINTN       RetryCount;
-  CHAR16      *AmideArgs[5];
-  CHAR16      SsArg[MAX_BUFFER_SIZE];
-  CHAR16      BsArg[MAX_BUFFER_SIZE];
+  CHAR16      SnString[MAX_BUFFER_SIZE]; // Строка с серийным номером
   
-  Print (L"Starting Serial Number and MAC verification...\n\n");
+  if (Config->CheckOnly) {
+    Print (L"Starting Serial Number and MAC verification (Check-Only Mode)...\n\n");
+  } else {
+    Print (L"Starting Serial Number and MAC verification...\n\n");
+  }
   
   // Проверяем, нужно ли проверять серийный номер
   if (Config->CheckSn) {
-    // Получаем текущий серийный номер из UEFI
+    // Получаем серийный номер из переменной UEFI (который нужно прошить/проверить)
     Status = GetVariableData (
               Config->SerialVarName,
               Config->SerialVarGuid,
-              &SnData,
-              &SnSize
+              &SnVarData,
+              &SnVarSize
               );
               
     if (EFI_ERROR (Status)) {
-      Print (L"Error: Failed to get Serial Number variable '%s'\n", Config->SerialVarName);
+      Print (L"Error: Failed to get Serial Number from variable '%s'\n", Config->SerialVarName);
       return Status;
     }
     
-    // Сравниваем серийный номер
-    if (SnData != NULL && Config->SerialNumber != NULL) {
-      Print (L"Current Serial Number: ");
-      PrintUcsString (SnData, SnSize);
-      Print (L"Expected Serial Number: %s\n", Config->SerialNumber);
-      
-      if (StrnCmp ((CHAR16*)SnData, Config->SerialNumber, StrLen (Config->SerialNumber)) == 0) {
-        Print (L"Serial Number matches the expected value.\n");
-        SnMatches = TRUE;
-      } else {
-        Print (L"Serial Number does NOT match the expected value!\n");
+    // Конвертируем данные в строку для отображения и использования с AMIDEEFIx64.efi
+    ZeroMem(SnString, sizeof(SnString));
+    
+    // Проверяем формат данных (UCS-2 или ASCII)
+    if (SnVarSize >= 2 && ((CHAR16*)SnVarData)[SnVarSize/2 - 1] == 0) {
+      // Данные в UCS-2 формате
+      StrCpyS(SnString, MAX_BUFFER_SIZE, (CHAR16*)SnVarData);
+    } else {
+      // Предполагаем ASCII формат или бинарные данные, конвертируем в строку
+      for (UINTN i = 0; i < MIN(SnVarSize, MAX_BUFFER_SIZE-1); i++) {
+        SnString[i] = ((UINT8*)SnVarData)[i];
       }
-      
-      FreePool (SnData);
+      SnString[MIN(SnVarSize, MAX_BUFFER_SIZE-1)] = 0;
     }
+    
+    Print (L"Target Serial Number from EFI variable '%s': %s\n", 
+           Config->SerialVarName, SnString);
+    
+    // Проверяем серийные номера в SMBIOS
+    SnMatches = CheckSerialNumber(Config->SerialVarName, Config->SerialVarGuid);
   } else {
     // Если не проверяем SN, считаем его совпадающим
     SnMatches = TRUE;
+    Print (L"Serial Number check skipped.\n");
   }
   
   // Проверяем, нужно ли проверять MAC-адрес
   if (Config->CheckMac) {
-    // Получаем текущий MAC-адрес из UEFI
+    // Получаем MAC-адрес из переменной UEFI
     Status = GetVariableData (
               Config->MacVarName,
               Config->MacVarGuid,
-              &MacData,
-              &MacSize
+              &MacVarData,
+              &MacVarSize
               );
               
     if (EFI_ERROR (Status)) {
-      Print (L"Error: Failed to get MAC Address variable '%s'\n", Config->MacVarName);
+      Print (L"Error: Failed to get MAC Address from variable '%s'\n", Config->MacVarName);
       
       // Если SN не прошит, то пытаемся его прошить независимо от MAC
-      if (!SnMatches) {
-        goto FlashSerial;
+      if (SnVarData != NULL) {
+        if (!SnMatches && !Config->CheckOnly) {
+          goto FlashSerial;
+        }
       }
       
+      if (SnVarData != NULL) {
+        FreePool (SnVarData);
+      }
       return Status;
     }
     
-    // Сравниваем MAC-адрес
-    if (MacData != NULL && Config->MacAddress != NULL) {
-      Print (L"Current MAC Address: ");
-      PrintUcsString (MacData, MacSize);
-      Print (L"Expected MAC Address: %s\n", Config->MacAddress);
-      
-      if (StrnCmp ((CHAR16*)MacData, Config->MacAddress, StrLen (Config->MacAddress)) == 0) {
-        Print (L"MAC Address matches the expected value.\n");
-        MacMatches = TRUE;
-      } else {
-        Print (L"MAC Address does NOT match the expected value!\n");
-      }
-      
-      FreePool (MacData);
-    }
+    // Здесь следует добавить код для проверки MAC-адресов сетевых интерфейсов
+    // Поскольку это требует использования специфичных протоколов, оставим как заглушку
+    Print (L"Target MAC Address from EFI variable: ");
+    PrintUcsString (MacVarData, MacVarSize);
+    Print (L"Warning: MAC Address checking is not implemented yet.\n");
+    Print (L"Assuming MAC Address does not match for testing.\n");
+    MacMatches = FALSE;
+    
   } else {
     // Если не проверяем MAC, считаем его совпадающим
     MacMatches = TRUE;
+    Print (L"MAC Address check skipped.\n");
+  }
+  
+  // Если работаем в режиме только проверки, выводим результат и завершаем работу
+  if (Config->CheckOnly) {
+    Print (L"\n=== Check Results ===\n");
+    if (Config->CheckSn) {
+      Print (L"Serial Number: %s\n", SnMatches ? L"MATCH" : L"MISMATCH");
+    }
+    if (Config->CheckMac) {
+      Print (L"MAC Address: %s\n", MacMatches ? L"MATCH" : L"MISMATCH");
+    }
+    
+    if (SnVarData != NULL) {
+      FreePool (SnVarData);
+    }
+    if (MacVarData != NULL) {
+      FreePool (MacVarData);
+    }
+    
+    return (SnMatches && MacMatches) ? EFI_SUCCESS : EFI_DEVICE_ERROR;
   }
   
 FlashSerial:
   // Если оба значения совпадают, ничего не делаем
   if (SnMatches && MacMatches) {
     Print (L"\nSuccess: All values match the expected values.\n");
+    if (SnVarData != NULL) {
+      FreePool (SnVarData);
+    }
+    if (MacVarData != NULL) {
+      FreePool (MacVarData);
+    }
     return EFI_SUCCESS;
   }
   
   // Если серийный номер не совпадает, пытаемся его прошить
-  if (!SnMatches) {
+  if (!SnMatches && SnVarData != NULL) {
     Print (L"\nAttempting to flash Serial Number...\n");
-    
-    // Подготавливаем аргументы для AMIDEEFIx64.efi
-    StrCpyS (SsArg, MAX_BUFFER_SIZE, L"/SS");
-    StrCatS (SsArg, MAX_BUFFER_SIZE, L" ");
-    StrCatS (SsArg, MAX_BUFFER_SIZE, Config->SerialNumber);
-    
-    StrCpyS (BsArg, MAX_BUFFER_SIZE, L"/BS");
-    StrCatS (BsArg, MAX_BUFFER_SIZE, L" ");
-    StrCatS (BsArg, MAX_BUFFER_SIZE, Config->SerialNumber);
-    
-    AmideArgs[0] = SsArg;
-    AmideArgs[1] = BsArg;
     
     // Пытаемся перепрошить серийный номер до 3 раз
     for (RetryCount = 0; RetryCount < 3; RetryCount++) {
       Print (L"Flashing attempt %d...\n", RetryCount + 1);
       
-      // Запускаем AMIDEEFIx64.efi
-      Status = RunEfiProgram (
+      // Запускаем AMIDEEFIx64.efi через Shell
+      Status = RunAmideefi(
                 Config->AmideEfiPath,
-                AmideArgs,
-                2
+                SnString
                 );
                 
       if (!EFI_ERROR (Status)) {
         // Проверяем, был ли серийный номер прошит успешно
-        VOID *NewSnData = NULL;
-        UINTN NewSnSize = 0;
+        BOOLEAN NewSnMatches = CheckSerialNumber(Config->SerialVarName, Config->SerialVarGuid);
         
-        Status = GetVariableData (
-                  Config->SerialVarName,
-                  Config->SerialVarGuid,
-                  &NewSnData,
-                  &NewSnSize
-                  );
-                  
-        if (!EFI_ERROR (Status) && NewSnData != NULL) {
-          if (StrnCmp ((CHAR16*)NewSnData, Config->SerialNumber, StrLen (Config->SerialNumber)) == 0) {
-            Print (L"Serial Number was successfully flashed!\n");
-            FreePool (NewSnData);
-            
-            // Если MAC не совпадает, нужно перезагрузиться в систему
-            if (!MacMatches) {
-              Print (L"\nMAC Address needs to be updated. Rebooting to system for further updates...\n");
-              return RebootToBoot();
+        if (NewSnMatches) {
+          Print (L"Serial Number was successfully flashed!\n");
+          
+          // Если MAC не совпадает, нужно перезагрузиться в систему
+          if (!MacMatches) {
+            Print (L"\nMAC Address needs to be updated. Rebooting to system for further updates...\n");
+            if (SnVarData != NULL) {
+              FreePool (SnVarData);
             }
-            
-            return EFI_SUCCESS;
+            if (MacVarData != NULL) {
+              FreePool (MacVarData);
+            }
+            return RebootToBoot();
           }
           
-          FreePool (NewSnData);
+          if (SnVarData != NULL) {
+            FreePool (SnVarData);
+          }
+          if (MacVarData != NULL) {
+            FreePool (MacVarData);
+          }
+          return EFI_SUCCESS;
         }
         
         Print (L"Failed to verify flashed Serial Number. Retrying...\n");
@@ -913,6 +1341,12 @@ FlashSerial:
     
     // Не удалось прошить серийный номер после 3 попыток
     Print (L"\nCRITICAL ERROR: Failed to flash Serial Number after 3 attempts!\n");
+    if (SnVarData != NULL) {
+      FreePool (SnVarData);
+    }
+    if (MacVarData != NULL) {
+      FreePool (MacVarData);
+    }
     return EFI_DEVICE_ERROR;
   }
   
@@ -920,9 +1354,21 @@ FlashSerial:
   if (SnMatches && !MacMatches) {
     Print (L"\nSerial Number is correct, but MAC Address needs to be updated.\n");
     Print (L"Rebooting to system for MAC Address update...\n");
+    if (SnVarData != NULL) {
+      FreePool (SnVarData);
+    }
+    if (MacVarData != NULL) {
+      FreePool (MacVarData);
+    }
     return RebootToBoot();
   }
   
+  if (SnVarData != NULL) {
+    FreePool (SnVarData);
+  }
+  if (MacVarData != NULL) {
+    FreePool (MacVarData);
+  }
   return EFI_SUCCESS;
 }
 
@@ -942,17 +1388,20 @@ PrintUsage (
   
   Print (L"Verification and Flashing Options:\n");
   Print (L"  --check          : Verify and flash if needed the SN and MAC\n");
-  Print (L"  --sn SERIAL      : Expected serial number\n");
-  Print (L"  --mac MAC        : Expected MAC address\n");
-  Print (L"  --vsn VARNAME    : Variable name that contains serial number (default: SerialNumber)\n");
-  Print (L"  --vmac VARNAME   : Variable name that contains MAC address\n");
+  Print (L"  --check-only     : Verify but DO NOT flash SN and MAC (just report status)\n");
+  Print (L"  --vsn VARNAME    : Name of EFI variable containing the serial number to flash\n");
+  Print (L"  --vmac VARNAME   : Name of EFI variable containing the MAC address to check\n");
   Print (L"  --amid PATH      : Path to AMIDEEFIx64.efi (default: current directory)\n\n");
+  
+  Print (L"System Information:\n");
+  Print (L"  --board-info     : Display detailed information about the motherboard\n\n");
   
   Print (L"Examples:\n");
   Print (L"  snsniff SerialNumber\n");
   Print (L"  snsniff SerialNumber --guid 12345678\n");
-  Print (L"  snsniff --check --sn ABC123 --mac 00:11:22:33:44:55 --vmac MacAddress\n");
-  Print (L"  snsniff --check --sn ABC123 --amid \\EFI\\TOOLS\\AMIDEEFIx64.efi\n");
+  Print (L"  snsniff --check --vsn SerialToFlash --vmac MacToCheck\n");
+  Print (L"  snsniff --check-only --vsn SerialToFlash\n");
+  Print (L"  snsniff --board-info\n");
 }
 
 /**
@@ -976,6 +1425,8 @@ ShellAppMain (
   OUTPUT_TYPE  OutputType = OUTPUT_ALL;
   UINTN        Index;
   BOOLEAN      CheckMode = FALSE;
+  BOOLEAN      CheckOnlyMode = FALSE;  // Флаг для режима только проверки
+  BOOLEAN      BoardInfoMode = FALSE;  // Флаг для вывода информации о плате
   CHECK_CONFIG Config;
   EFI_GUID     DefaultGuid = mCustomVarGuid;
   
@@ -984,10 +1435,14 @@ ShellAppMain (
   
   // Инициализируем конфигурацию проверки
   ZeroMem (&Config, sizeof (CHECK_CONFIG));
-  Config.SerialVarName = L"SerialNumber";
+  Config.SerialVarName = NULL;  // По умолчанию не задано
+  Config.MacVarName = NULL;     // По умолчанию не задано
   Config.AmideEfiPath = L"AMIDEEFIx64.efi";
   Config.SerialVarGuid = &DefaultGuid;
   Config.MacVarGuid = &DefaultGuid;
+  Config.CheckSn = FALSE;
+  Config.CheckMac = FALSE;
+  Config.CheckOnly = FALSE;
   
   // Проверяем аргументы командной строки
   if (Argc == 1) {
@@ -1038,32 +1493,17 @@ ShellAppMain (
       } else if (StrCmp (Argv[Index], L"--check") == 0) {
         // Включаем режим проверки и перепрошивки
         CheckMode = TRUE;
-      } else if (StrCmp (Argv[Index], L"--sn") == 0) {
-        // Проверяем, что есть следующий аргумент
-        if (Index + 1 < Argc) {
-          Config.SerialNumber = Argv[Index + 1];
-          Config.CheckSn = TRUE;
-          Index++; // Пропускаем значение опции
-        } else {
-          Print (L"Error: Missing serial number value\n");
-          PrintUsage();
-          return EFI_INVALID_PARAMETER;
-        }
-      } else if (StrCmp (Argv[Index], L"--mac") == 0) {
-        // Проверяем, что есть следующий аргумент
-        if (Index + 1 < Argc) {
-          Config.MacAddress = Argv[Index + 1];
-          Config.CheckMac = TRUE;
-          Index++; // Пропускаем значение опции
-        } else {
-          Print (L"Error: Missing MAC address value\n");
-          PrintUsage();
-          return EFI_INVALID_PARAMETER;
-        }
+      } else if (StrCmp (Argv[Index], L"--check-only") == 0) {
+        // Включаем режим только проверки
+        CheckOnlyMode = TRUE;
+      } else if (StrCmp (Argv[Index], L"--board-info") == 0) {
+        // Включаем режим вывода информации о материнской плате
+        BoardInfoMode = TRUE;
       } else if (StrCmp (Argv[Index], L"--vsn") == 0) {
         // Проверяем, что есть следующий аргумент
         if (Index + 1 < Argc) {
           Config.SerialVarName = Argv[Index + 1];
+          Config.CheckSn = TRUE;
           Index++; // Пропускаем значение опции
         } else {
           Print (L"Error: Missing serial variable name\n");
@@ -1074,6 +1514,7 @@ ShellAppMain (
         // Проверяем, что есть следующий аргумент
         if (Index + 1 < Argc) {
           Config.MacVarName = Argv[Index + 1];
+          Config.CheckMac = TRUE;
           Index++; // Пропускаем значение опции
         } else {
           Print (L"Error: Missing MAC variable name\n");
@@ -1103,23 +1544,33 @@ ShellAppMain (
     }
   }
   
-  if (CheckMode) {
-    // Режим проверки и перепрошивки
+  // Режим вывода информации о материнской плате
+  if (BoardInfoMode) {
+    Status = DisplayBaseBoardInfo();
+    return (INTN)Status;
+  }
+  
+  // Режим проверки (с прошивкой или без)
+  if (CheckMode || CheckOnlyMode) {
+    // Режим проверки и перепрошивки или только проверки
     if (!Config.CheckSn && !Config.CheckMac) {
-      Print (L"Error: You must specify at least one value to check (--sn or --mac)\n");
+      Print (L"Error: You must specify at least one value to check (--vsn or --vmac)\n");
       PrintUsage();
       return EFI_INVALID_PARAMETER;
     }
     
-    // Проверяем и перепрошиваем значения
+    // Устанавливаем флаг CheckOnly для передачи в CheckAndFlashValues
+    Config.CheckOnly = CheckOnlyMode;
+    
+    // Проверяем и перепрошиваем значения (если не CheckOnlyMode)
     Status = CheckAndFlashValues (&Config);
   } else {
     // Стандартный режим - просто отображаем переменную
     Status = FindAndPrintVariable (VariableName, GuidPrefix, OutputType);
   }
   
-  // Ждем нажатия клавиши, если не используется rawtype и не режим проверки
-  if (OutputType == OUTPUT_ALL && !CheckMode) {
+  // Ждем нажатия клавиши, если не используется rawtype
+  if (OutputType == OUTPUT_ALL) {
     EFI_INPUT_KEY Key;
     Print (L"\nPress any key to exit...\n");
     gBS->WaitForEvent (1, &gST->ConIn->WaitForKey, NULL);
