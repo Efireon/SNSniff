@@ -621,17 +621,6 @@ RunAmideefi (
   return Status;
 }
 
-/**
-  Получает строку из SMBIOS структуры по ее номеру.
-  
-  @param StringNumber   Номер строки в StringTable
-  @param StringTable    Указатель на таблицу строк
-  @param StringBuffer   Буфер для результата
-  @param StringBufferSize Размер буфера
-  
-  @retval EFI_SUCCESS   Строка успешно найдена и скопирована
-  @retval EFI_NOT_FOUND Строка с указанным номером не найдена
-**/
 EFI_STATUS
 GetSmbiosString (
   IN  UINT8     StringNumber,
@@ -640,39 +629,35 @@ GetSmbiosString (
   IN  UINTN     StringBufferSize
   )
 {
-  UINTN  Index;
-  UINT8  CurrentString;
-  
+  UINTN i;
+
   if (StringNumber == 0 || StringTable == NULL || StringBuffer == NULL) {
     return EFI_INVALID_PARAMETER;
   }
-  
-  // Находим нужную строку в таблице строк
-  CurrentString = 1;
-  while (CurrentString < StringNumber) {
-    if (*StringTable == 0) {
-      CurrentString++;
-      if (CurrentString == StringNumber) {
-        StringTable++;
-        break;
-      }
+
+  // Пропускаем (StringNumber - 1) строк, каждая заканчивается нулевым байтом.
+  for (i = 1; i < StringNumber; i++) {
+    // Пропускаем символы текущей строки до нулевого байта.
+    while (*StringTable != 0) {
+      StringTable++;
     }
+    // Переходим через нулевой байт.
     StringTable++;
-    
-    // Если достигнут конец таблицы строк (два последовательных нуля)
+    // Если мы достигли двойного нуля, строка не найдена.
     if (*StringTable == 0) {
       return EFI_NOT_FOUND;
     }
   }
-  
-  // Копируем строку в буфер с преобразованием в CHAR16
-  for (Index = 0; Index < StringBufferSize - 1 && StringTable[Index] != 0; Index++) {
-    StringBuffer[Index] = (CHAR16)StringTable[Index];
+
+  // Копируем найденную строку в выходной буфер с преобразованием в UCS-2.
+  for (i = 0; i < StringBufferSize - 1 && StringTable[i] != 0; i++) {
+    StringBuffer[i] = (CHAR16)StringTable[i];
   }
-  StringBuffer[Index] = 0;
-  
+  StringBuffer[i] = 0;
+
   return EFI_SUCCESS;
 }
+
 
 /**
   Получает серийный номер системы из SMBIOS.
@@ -1012,11 +997,13 @@ DisplayBaseBoardInfo (
   
   // Выводим особенности платы
   Print (L"Feature Flags: 0x%02X\n", Type2Record->FeatureFlag);
-  if (Type2Record->FeatureFlag & 0x01) Print (L"  - Hosting Board\n");
-  if (Type2Record->FeatureFlag & 0x02) Print (L"  - Requires Daughter Board\n");
-  if (Type2Record->FeatureFlag & 0x04) Print (L"  - Removable\n");
-  if (Type2Record->FeatureFlag & 0x08) Print (L"  - Replaceable\n");
-  if (Type2Record->FeatureFlag & 0x10) Print (L"  - Hot Swappable\n");
+  if (Type2Record->FeatureFlag.Motherboard)            Print(L"  - Hosting Board\n");
+  if (Type2Record->FeatureFlag.RequiresDaughterCard)   Print(L"  - Requires Daughter Board\n");
+  if (Type2Record->FeatureFlag.Removable)              Print(L"  - Removable\n");
+  if (Type2Record->FeatureFlag.Replaceable)            Print(L"  - Replaceable\n");
+  if (Type2Record->FeatureFlag.HotSwappable)           Print(L"  - Hot Swappable\n");
+
+
   
   // Выводим расположение в шасси
   if (Type2Record->LocationInChassis != 0) {
