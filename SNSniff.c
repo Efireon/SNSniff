@@ -21,6 +21,7 @@
 #include <Guid/FileInfo.h>
 #include <IndustryStandard/SmBios.h>
 #include <Protocol/Smbios.h>
+#include <Protocol/SimpleNetwork.h>
 
 // Стандартные GUID для переменных
 static EFI_GUID mCustomVarGuid = {
@@ -265,11 +266,13 @@ ParseGuidPrefix (
 
 /**
   Получает содержимое переменной UEFI.
+  Если VariableGuid равен NULL, ищет переменную по всем доступным GUID.
 
   @param VariableName   Имя переменной
-  @param VariableGuid   GUID переменной
+  @param VariableGuid   GUID переменной (может быть NULL для поиска по всем GUID)
   @param VariableData   Указатель на буфер для данных (будет выделен)
   @param VariableSize   Указатель на размер данных
+  @param FoundGuid      Указатель на буфер для найденного GUID (может быть NULL)
 
   @retval EFI_SUCCESS   Переменная успешно прочитана
   @retval другое        Ошибка при чтении переменной
@@ -279,15 +282,20 @@ GetVariableData (
   IN  CONST CHAR16    *VariableName,
   IN  EFI_GUID        *VariableGuid,
   OUT VOID            **VariableData,
-  OUT UINTN           *VariableSize
+  OUT UINTN           *VariableSize,
+  OUT EFI_GUID        *FoundGuid OPTIONAL
   )
 {
   EFI_STATUS  Status;
   UINT32      Attributes = 0;
+  UINTN       Index;
+  CHAR16      *Name = NULL;
+  UINTN       NameSize = 256 * sizeof(CHAR16);
+  EFI_GUID    TempGuid;
+  BOOLEAN     Found = FALSE;
   
   // Проверяем входные параметры
-  if (VariableName == NULL || VariableGuid == NULL || 
-      VariableData == NULL || VariableSize == NULL) {
+  if (VariableName == NULL || VariableData == NULL || VariableSize == NULL) {
     return EFI_INVALID_PARAMETER;
   }
   
@@ -295,39 +303,168 @@ GetVariableData (
   *VariableData = NULL;
   *VariableSize = 0;
   
-  // Получаем размер переменной
-  Status = gRT->GetVariable (
-                  (CHAR16*)VariableName,
-                  VariableGuid,
-                  &Attributes,
-                  VariableSize,
-                  NULL
-                  );
-                  
-  if (Status == EFI_BUFFER_TOO_SMALL) {
-    // Выделяем память для данных
-    *VariableData = AllocateZeroPool (*VariableSize);
-    if (*VariableData == NULL) {
-      return EFI_OUT_OF_RESOURCES;
-    }
-    
-    // Получаем значение переменной
+  // Если GUID указан, ищем только по нему
+  if (VariableGuid != NULL) {
+    // Получаем размер переменной
     Status = gRT->GetVariable (
                     (CHAR16*)VariableName,
                     VariableGuid,
                     &Attributes,
                     VariableSize,
-                    *VariableData
+                    NULL
                     );
                     
-    if (EFI_ERROR (Status)) {
-      FreePool (*VariableData);
-      *VariableData = NULL;
-      *VariableSize = 0;
+    if (Status == EFI_BUFFER_TOO_SMALL) {
+      // Выделяем память для данных
+      *VariableData = AllocateZeroPool (*VariableSize);
+      if (*VariableData == NULL) {
+        return EFI_OUT_OF_RESOURCES;
+      }
+      
+      // Получаем значение переменной
+      Status = gRT->GetVariable (
+                      (CHAR16*)VariableName,
+                      VariableGuid,
+                      &Attributes,
+                      VariableSize,
+                      *VariableData
+                      );
+                      
+      if (EFI_ERROR (Status)) {
+        FreePool (*VariableData);
+        *VariableData = NULL;
+        *VariableSize = 0;
+      } else if (FoundGuid != NULL) {
+        CopyMem(FoundGuid, VariableGuid, sizeof(EFI_GUID));
+      }
+    }
+    
+    return Status;
+  }
+  
+  // Если GUID не указан, сначала ищем по известным GUID
+  for (Index = 0; mKnownGuids[Index].Guid != NULL && !Found; Index++) {
+    // Получаем размер переменной
+    Status = gRT->GetVariable (
+                    (CHAR16*)VariableName,
+                    mKnownGuids[Index].Guid,
+                    &Attributes,
+                    VariableSize,
+                    NULL
+                    );
+                    
+    if (Status == EFI_BUFFER_TOO_SMALL) {
+      // Выделяем память для данных
+      *VariableData = AllocateZeroPool (*VariableSize);
+      if (*VariableData == NULL) {
+        return EFI_OUT_OF_RESOURCES;
+      }
+      
+      // Получаем значение переменной
+      Status = gRT->GetVariable (
+                      (CHAR16*)VariableName,
+                      mKnownGuids[Index].Guid,
+                      &Attributes,
+                      VariableSize,
+                      *VariableData
+                      );
+                      
+      if (!EFI_ERROR (Status)) {
+        Found = TRUE;
+        if (FoundGuid != NULL) {
+          CopyMem(FoundGuid, mKnownGuids[Index].Guid, sizeof(EFI_GUID));
+        }
+      } else {
+        FreePool (*VariableData);
+        *VariableData = NULL;
+        *VariableSize = 0;
+      }
     }
   }
   
-  return Status;
+  // Если не нашли в известных GUID, перебираем все GUID в системе
+  if (!Found) {
+    // Выделяем буфер для имени переменной
+    Name = AllocateZeroPool (NameSize);
+    if (Name == NULL) {
+      return EFI_OUT_OF_RESOURCES;
+    }
+    
+    // Инициализируем переменные для начала поиска
+    ZeroMem (&TempGuid, sizeof (EFI_GUID));
+    Name[0] = 0;
+    
+    // Перебираем все переменные в системе
+    while (!Found) {
+      NameSize = 256 * sizeof(CHAR16);  // Восстанавливаем размер буфера
+      Status = gRT->GetNextVariableName (&NameSize, Name, &TempGuid);
+      
+      if (Status == EFI_BUFFER_TOO_SMALL) {
+        // Буфер слишком мал, увеличиваем его размер
+        FreePool (Name);
+        Name = AllocateZeroPool (NameSize);
+        if (Name == NULL) {
+          return EFI_OUT_OF_RESOURCES;
+        }
+        
+        // Повторяем попытку с увеличенным буфером
+        Status = gRT->GetNextVariableName (&NameSize, Name, &TempGuid);
+      }
+      
+      if (EFI_ERROR (Status)) {
+        if (Status == EFI_NOT_FOUND) {
+          // Больше переменных нет, завершаем поиск
+          Status = EFI_NOT_FOUND;
+          break;
+        } else {
+          // Другая ошибка
+          break;
+        }
+      }
+      
+      // Проверяем, совпадает ли имя с искомым
+      if (StrCmp (Name, VariableName) == 0) {
+        // Нашли переменную с нужным именем, получаем ее значение
+        *VariableSize = 0;
+        Status = gRT->GetVariable (Name, &TempGuid, &Attributes, VariableSize, NULL);
+        
+        if (Status == EFI_BUFFER_TOO_SMALL) {
+          // Выделяем память под данные
+          *VariableData = AllocateZeroPool (*VariableSize);
+          if (*VariableData == NULL) {
+            FreePool (Name);
+            return EFI_OUT_OF_RESOURCES;
+          }
+          
+          // Получаем значение переменной
+          Status = gRT->GetVariable (Name, &TempGuid, &Attributes, VariableSize, *VariableData);
+          
+          if (!EFI_ERROR (Status)) {
+            Found = TRUE;
+            if (FoundGuid != NULL) {
+              CopyMem(FoundGuid, &TempGuid, sizeof(EFI_GUID));
+            }
+            break; // Нашли переменную, выходим из цикла
+          } else {
+            FreePool (*VariableData);
+            *VariableData = NULL;
+            *VariableSize = 0;
+          }
+        }
+      }
+    }
+    
+    // Освобождаем память, выделенную для имени
+    if (Name != NULL) {
+      FreePool (Name);
+    }
+  }
+  
+  if (!Found) {
+    return EFI_NOT_FOUND;
+  }
+  
+  return EFI_SUCCESS;
 }
 
 /**
@@ -355,6 +492,7 @@ FindAndPrintVariable (
   BOOLEAN     GuidSpecified = FALSE;
   UINTN       Index;
   BOOLEAN     Found = FALSE;
+  EFI_GUID    FoundGuid;
   
   // Если указан префикс GUID, пытаемся его распарсить
   if (GuidPrefix != NULL && StrLen (GuidPrefix) > 0) {
@@ -365,144 +503,132 @@ FindAndPrintVariable (
     }
   }
   
-  // Если GUID не указан, ищем по всем известным GUID
+  // Если GUID не указан, ищем переменную по всем доступным GUID
   if (!GuidSpecified) {
-    for (Index = 0; mKnownGuids[Index].Guid != NULL; Index++) {
-      // Сначала узнаем размер переменной
-      VariableSize = 0;
-      Status = gRT->GetVariable (
-                      (CHAR16*)VariableName,
-                      mKnownGuids[Index].Guid,
-                      &Attributes,
-                      &VariableSize,
-                      NULL
-                      );
-                      
-      if (Status == EFI_BUFFER_TOO_SMALL) {
-        // Переменная найдена, выделяем память и получаем данные
-        if (VariableData != NULL) {
-          FreePool (VariableData);
+    Status = GetVariableData(
+              VariableName,
+              NULL,  // Ищем по всем GUID
+              &VariableData,
+              &VariableSize,
+              &FoundGuid
+              );
+              
+    if (!EFI_ERROR(Status)) {
+      Found = TRUE;
+      
+      // Проверяем, есть ли это GUID в известных GUID для более дружественного отображения
+      CHAR16 *GuidName = L"Unknown";
+      for (Index = 0; mKnownGuids[Index].Guid != NULL; Index++) {
+        if (CompareGuid (mKnownGuids[Index].Guid, &FoundGuid)) {
+          GuidName = mKnownGuids[Index].Name;
+          break;
         }
+      }
+      
+      // Если режим вывода не "только данные", выводим информацию о переменной
+      if (OutputType == OUTPUT_ALL) {
+        Print (L"Variable Name: %s\n", VariableName);
+        Print (L"GUID: %s (%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X)\n", 
+               GuidName,
+               FoundGuid.Data1, FoundGuid.Data2, FoundGuid.Data3,
+               FoundGuid.Data4[0], FoundGuid.Data4[1], FoundGuid.Data4[2],
+               FoundGuid.Data4[3], FoundGuid.Data4[4], FoundGuid.Data4[5],
+               FoundGuid.Data4[6], FoundGuid.Data4[7]);
         
-        VariableData = AllocateZeroPool (VariableSize);
-        if (VariableData == NULL) {
-          Print (L"Error: Failed to allocate memory\n");
-          return EFI_OUT_OF_RESOURCES;
-        }
+        // Получаем атрибуты переменной
+        gRT->GetVariable(
+               (CHAR16*)VariableName,
+               &FoundGuid,
+               &Attributes,
+               &VariableSize,
+               VariableData
+               );
         
-        Status = gRT->GetVariable (
-                        (CHAR16*)VariableName,
-                        mKnownGuids[Index].Guid,
-                        &Attributes,
-                        &VariableSize,
-                        VariableData
-                        );
-                        
-        if (!EFI_ERROR (Status)) {
-          Found = TRUE;
-          
-          // Если режим вывода не "только данные", выводим информацию о переменной
-          if (OutputType == OUTPUT_ALL) {
-            Print (L"Variable Name: %s\n", VariableName);
-            Print (L"GUID: %s\n", mKnownGuids[Index].Name);
-            Print (L"Size: %d bytes\n", VariableSize);
-            Print (L"Attributes: 0x%08X\n\n", Attributes);
-            
-            Print (L"Hexadecimal dump:\n");
+        Print (L"Size: %d bytes\n", VariableSize);
+        Print (L"Attributes: 0x%08X\n\n", Attributes);
+        
+        Print (L"Hexadecimal dump:\n");
+        PrintHexDump (VariableData, VariableSize);
+        
+        Print (L"\nAs string (UCS-2): ");
+        PrintUcsString (VariableData, VariableSize);
+        
+        Print (L"As string (ASCII): ");
+        PrintAsciiString (VariableData, VariableSize);
+      } else {
+        // Выводим только в указанном формате
+        switch (OutputType) {
+          case OUTPUT_HEX:
             PrintHexDump (VariableData, VariableSize);
-            
-            Print (L"\nAs string (UCS-2): ");
-            PrintUcsString (VariableData, VariableSize);
-            
-            Print (L"As string (ASCII): ");
+            break;
+          case OUTPUT_ASCII:
             PrintAsciiString (VariableData, VariableSize);
-          } else {
-            // Выводим только в указанном формате
-            switch (OutputType) {
-              case OUTPUT_HEX:
-                PrintHexDump (VariableData, VariableSize);
-                break;
-              case OUTPUT_ASCII:
-                PrintAsciiString (VariableData, VariableSize);
-                break;
-              case OUTPUT_UCS:
-                PrintUcsString (VariableData, VariableSize);
-                break;
-              default:
-                break;
-            }
-          }
-          
-          break; // Переменная найдена, выходим из цикла
+            break;
+          case OUTPUT_UCS:
+            PrintUcsString (VariableData, VariableSize);
+            break;
+          default:
+            break;
         }
       }
     }
   } else {
     // Ищем по указанному GUID
-    // Сначала узнаем размер переменной
-    VariableSize = 0;
-    Status = gRT->GetVariable (
-                    (CHAR16*)VariableName,
-                    &TargetGuid,
-                    &Attributes,
-                    &VariableSize,
-                    NULL
-                    );
-                    
-    if (Status == EFI_BUFFER_TOO_SMALL) {
-      // Переменная найдена, выделяем память и получаем данные
-      VariableData = AllocateZeroPool (VariableSize);
-      if (VariableData == NULL) {
-        Print (L"Error: Failed to allocate memory\n");
-        return EFI_OUT_OF_RESOURCES;
-      }
+    Status = GetVariableData(
+              VariableName,
+              &TargetGuid,
+              &VariableData,
+              &VariableSize,
+              NULL
+              );
+              
+    if (!EFI_ERROR(Status)) {
+      Found = TRUE;
       
-      Status = gRT->GetVariable (
-                      (CHAR16*)VariableName,
-                      &TargetGuid,
-                      &Attributes,
-                      &VariableSize,
-                      VariableData
-                      );
-                      
-      if (!EFI_ERROR (Status)) {
-        Found = TRUE;
+      // Если режим вывода не "только данные", выводим информацию о переменной
+      if (OutputType == OUTPUT_ALL) {
+        Print (L"Variable Name: %s\n", VariableName);
+        Print (L"GUID: ");
+        Print (L"%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X\n",
+               TargetGuid.Data1, TargetGuid.Data2, TargetGuid.Data3,
+               TargetGuid.Data4[0], TargetGuid.Data4[1], TargetGuid.Data4[2],
+               TargetGuid.Data4[3], TargetGuid.Data4[4], TargetGuid.Data4[5],
+               TargetGuid.Data4[6], TargetGuid.Data4[7]);
         
-        // Если режим вывода не "только данные", выводим информацию о переменной
-        if (OutputType == OUTPUT_ALL) {
-          Print (L"Variable Name: %s\n", VariableName);
-          Print (L"GUID: ");
-          Print (L"%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X\n",
-                 TargetGuid.Data1, TargetGuid.Data2, TargetGuid.Data3,
-                 TargetGuid.Data4[0], TargetGuid.Data4[1], TargetGuid.Data4[2],
-                 TargetGuid.Data4[3], TargetGuid.Data4[4], TargetGuid.Data4[5],
-                 TargetGuid.Data4[6], TargetGuid.Data4[7]);
-          Print (L"Size: %d bytes\n", VariableSize);
-          Print (L"Attributes: 0x%08X\n\n", Attributes);
-          
-          Print (L"Hexadecimal dump:\n");
-          PrintHexDump (VariableData, VariableSize);
-          
-          Print (L"\nAs string (UCS-2): ");
-          PrintUcsString (VariableData, VariableSize);
-          
-          Print (L"As string (ASCII): ");
-          PrintAsciiString (VariableData, VariableSize);
-        } else {
-          // Выводим только в указанном формате
-          switch (OutputType) {
-            case OUTPUT_HEX:
-              PrintHexDump (VariableData, VariableSize);
-              break;
-            case OUTPUT_ASCII:
-              PrintAsciiString (VariableData, VariableSize);
-              break;
-            case OUTPUT_UCS:
-              PrintUcsString (VariableData, VariableSize);
-              break;
-            default:
-              break;
-          }
+        // Получаем атрибуты переменной
+        gRT->GetVariable(
+               (CHAR16*)VariableName,
+               &TargetGuid,
+               &Attributes,
+               &VariableSize,
+               VariableData
+               );
+        
+        Print (L"Size: %d bytes\n", VariableSize);
+        Print (L"Attributes: 0x%08X\n\n", Attributes);
+        
+        Print (L"Hexadecimal dump:\n");
+        PrintHexDump (VariableData, VariableSize);
+        
+        Print (L"\nAs string (UCS-2): ");
+        PrintUcsString (VariableData, VariableSize);
+        
+        Print (L"As string (ASCII): ");
+        PrintAsciiString (VariableData, VariableSize);
+      } else {
+        // Выводим только в указанном формате
+        switch (OutputType) {
+          case OUTPUT_HEX:
+            PrintHexDump (VariableData, VariableSize);
+            break;
+          case OUTPUT_ASCII:
+            PrintAsciiString (VariableData, VariableSize);
+            break;
+          case OUTPUT_UCS:
+            PrintUcsString (VariableData, VariableSize);
+            break;
+          default:
+            break;
         }
       }
     }
@@ -1045,11 +1171,473 @@ DisplayBaseBoardInfo (
 }
 
 /**
+  Сравнивает два MAC-адреса в формате ASCII строк с учетом разных форматов.
+  
+  @param Mac1     Первый MAC-адрес
+  @param Mac2     Второй MAC-адрес
+  
+  @retval TRUE    MAC-адреса совпадают
+  @retval FALSE   MAC-адреса не совпадают
+**/
+BOOLEAN
+CompareMacAddresses (
+  IN CONST CHAR8  *Mac1,
+  IN CONST CHAR8  *Mac2
+  )
+{
+  UINT8 BinaryMac1[6] = {0};
+  UINT8 BinaryMac2[6] = {0};
+  CHAR8 NormalizedMac1[13] = {0}; // 12 hex chars + null terminator
+  CHAR8 NormalizedMac2[13] = {0}; // 12 hex chars + null terminator
+  UINTN Mac1Len, Mac2Len;
+  UINTN Index, OutIndex;
+  
+  if (Mac1 == NULL || Mac2 == NULL) {
+    return FALSE;
+  }
+  
+  Mac1Len = AsciiStrLen(Mac1);
+  Mac2Len = AsciiStrLen(Mac2);
+  
+  // Нормализация первого MAC - удаляем разделители и преобразуем в верхний регистр
+  OutIndex = 0;
+  for (Index = 0; Index < Mac1Len && OutIndex < 12; Index++) {
+    // Пропускаем разделители и пробелы
+    if (Mac1[Index] == ':' || Mac1[Index] == '-' || Mac1[Index] == ' ' || Mac1[Index] == '.') {
+      continue;
+    }
+    
+    // Преобразуем строчные буквы в заглавные
+    if (Mac1[Index] >= 'a' && Mac1[Index] <= 'f') {
+      NormalizedMac1[OutIndex++] = Mac1[Index] - ('a' - 'A');
+    } else {
+      NormalizedMac1[OutIndex++] = Mac1[Index];
+    }
+  }
+  NormalizedMac1[OutIndex] = '\0';
+  
+  // Нормализация второго MAC - удаляем разделители и преобразуем в верхний регистр
+  OutIndex = 0;
+  for (Index = 0; Index < Mac2Len && OutIndex < 12; Index++) {
+    // Пропускаем разделители и пробелы
+    if (Mac2[Index] == ':' || Mac2[Index] == '-' || Mac2[Index] == ' ' || Mac2[Index] == '.') {
+      continue;
+    }
+    
+    // Преобразуем строчные буквы в заглавные
+    if (Mac2[Index] >= 'a' && Mac2[Index] <= 'f') {
+      NormalizedMac2[OutIndex++] = Mac2[Index] - ('a' - 'A');
+    } else {
+      NormalizedMac2[OutIndex++] = Mac2[Index];
+    }
+  }
+  NormalizedMac2[OutIndex] = '\0';
+  
+  // Если нормализованные строки имеют по 12 символов (6 байт MAC), сравниваем их
+  if (AsciiStrLen(NormalizedMac1) == 12 && AsciiStrLen(NormalizedMac2) == 12) {
+    // Для отладки
+    Print(L"Normalized MAC 1: %a\n", NormalizedMac1);
+    Print(L"Normalized MAC 2: %a\n", NormalizedMac2);
+    
+    return (AsciiStrnCmp(NormalizedMac1, NormalizedMac2, 12) == 0);
+  }
+  
+  // Если нормализация не сработала, попробуем преобразовать их в бинарный формат
+  // и затем сравнить
+  
+  // Преобразуем нормализованный первый MAC в бинарный формат
+  if (AsciiStrLen(NormalizedMac1) == 12) {
+    for (Index = 0; Index < 6; Index++) {
+      CHAR8 HexByte[3] = {NormalizedMac1[Index*2], NormalizedMac1[Index*2+1], '\0'};
+      UINT8 Value = 0;
+      
+      // Первый символ
+      if (HexByte[0] >= '0' && HexByte[0] <= '9') {
+        Value = (HexByte[0] - '0') << 4;
+      } else if (HexByte[0] >= 'A' && HexByte[0] <= 'F') {
+        Value = (HexByte[0] - 'A' + 10) << 4;
+      } else {
+        return FALSE; // Некорректный символ
+      }
+      
+      // Второй символ
+      if (HexByte[1] >= '0' && HexByte[1] <= '9') {
+        Value |= (HexByte[1] - '0');
+      } else if (HexByte[1] >= 'A' && HexByte[1] <= 'F') {
+        Value |= (HexByte[1] - 'A' + 10);
+      } else {
+        return FALSE; // Некорректный символ
+      }
+      
+      BinaryMac1[Index] = Value;
+    }
+  }
+  
+  // Преобразуем нормализованный второй MAC в бинарный формат
+  if (AsciiStrLen(NormalizedMac2) == 12) {
+    for (Index = 0; Index < 6; Index++) {
+      CHAR8 HexByte[3] = {NormalizedMac2[Index*2], NormalizedMac2[Index*2+1], '\0'};
+      UINT8 Value = 0;
+      
+      // Первый символ
+      if (HexByte[0] >= '0' && HexByte[0] <= '9') {
+        Value = (HexByte[0] - '0') << 4;
+      } else if (HexByte[0] >= 'A' && HexByte[0] <= 'F') {
+        Value = (HexByte[0] - 'A' + 10) << 4;
+      } else {
+        return FALSE; // Некорректный символ
+      }
+      
+      // Второй символ
+      if (HexByte[1] >= '0' && HexByte[1] <= '9') {
+        Value |= (HexByte[1] - '0');
+      } else if (HexByte[1] >= 'A' && HexByte[1] <= 'F') {
+        Value |= (HexByte[1] - 'A' + 10);
+      } else {
+        return FALSE; // Некорректный символ
+      }
+      
+      BinaryMac2[Index] = Value;
+    }
+  }
+  
+  // Для отладки
+  if (AsciiStrLen(NormalizedMac1) == 12 && AsciiStrLen(NormalizedMac2) == 12) {
+    Print(L"Binary MAC 1: %02X:%02X:%02X:%02X:%02X:%02X\n",
+          BinaryMac1[0], BinaryMac1[1], BinaryMac1[2],
+          BinaryMac1[3], BinaryMac1[4], BinaryMac1[5]);
+    Print(L"Binary MAC 2: %02X:%02X:%02X:%02X:%02X:%02X\n",
+          BinaryMac2[0], BinaryMac2[1], BinaryMac2[2],
+          BinaryMac2[3], BinaryMac2[4], BinaryMac2[5]);
+  }
+  
+  // Сравниваем бинарные MAC-адреса
+  return (CompareMem(BinaryMac1, BinaryMac2, 6) == 0);
+}
+
+/**
+  Преобразует бинарный MAC-адрес в строку формата XX:XX:XX:XX:XX:XX.
+  
+  @param MacAddr       Указатель на бинарный MAC-адрес (6 байт)
+  @param MacAddrStr    Буфер для строки (минимум 18 байт)
+**/
+VOID
+FormatMacAddress (
+  IN  UINT8   *MacAddr,
+  OUT CHAR8   *MacAddrStr
+  )
+{
+  if (MacAddr == NULL || MacAddrStr == NULL) {
+    return;
+  }
+  
+  AsciiSPrint(
+    MacAddrStr,
+    18, // 17 символов + нулевой байт
+    "%02X:%02X:%02X:%02X:%02X:%02X",
+    MacAddr[0], MacAddr[1], MacAddr[2],
+    MacAddr[3], MacAddr[4], MacAddr[5]
+  );
+}
+
+/**
+  Получает MAC-адрес из переменной UEFI и преобразует его в ASCII формат.
+  
+  @param VariableName    Имя переменной UEFI с MAC-адресом
+  @param VariableGuid    GUID переменной UEFI (может быть NULL для поиска по всем GUID)
+  @param MacString       Буфер для MAC-адреса в ASCII формате
+  @param MacStringSize   Размер буфера
+  @param FoundGuid       Указатель на буфер для найденного GUID (может быть NULL)
+  
+  @retval EFI_SUCCESS    MAC-адрес успешно получен и преобразован
+  @retval другое         Ошибка при получении или преобразовании
+**/
+EFI_STATUS
+GetMacAddressAsAscii (
+  IN  CONST CHAR16    *VariableName,
+  IN  EFI_GUID        *VariableGuid,
+  OUT CHAR8           *MacString,
+  IN  UINTN           MacStringSize,
+  OUT EFI_GUID        *FoundGuid OPTIONAL
+  )
+{
+  EFI_STATUS  Status;
+  VOID        *MacData = NULL;
+  UINTN       MacDataSize = 0;
+  UINTN       StringLen = 0;
+  UINTN       Index;
+  
+  // Проверяем входные параметры
+  if (VariableName == NULL || MacString == NULL || MacStringSize == 0) {
+    return EFI_INVALID_PARAMETER;
+  }
+  
+  // Инициализируем выходной буфер
+  ZeroMem (MacString, MacStringSize);
+  
+  // Получаем данные MAC-адреса из переменной UEFI
+  Status = GetVariableData (
+            VariableName,
+            VariableGuid,
+            &MacData,
+            &MacDataSize,
+            FoundGuid
+            );
+            
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+  
+  Print(L"DEBUG: MAC variable size: %d bytes\n", MacDataSize);
+  Print(L"DEBUG: MAC variable raw data: ");
+  for (Index = 0; Index < MIN(MacDataSize, 20); Index++) {
+    Print(L"%02X ", ((UINT8*)MacData)[Index]);
+  }
+  Print(L"\n");
+  
+  // Проверяем размер данных для разных форматов
+  if (MacDataSize == 6) {
+    // Бинарный MAC-адрес (6 байт)
+    Print(L"DEBUG: Detected binary MAC format (6 bytes)\n");
+    FormatMacAddress((UINT8*)MacData, MacString);
+  } else if (MacDataSize >= 2 && ((CHAR16*)MacData)[MacDataSize/2 - 1] == 0) {
+    // Данные в UCS-2 формате, конвертируем в ASCII
+    Print(L"DEBUG: Detected UCS-2 string format\n");
+    CHAR16 *UnicodeData = (CHAR16*)MacData;
+    StringLen = StrLen(UnicodeData);
+    
+    Print(L"DEBUG: UCS-2 MAC string: %s\n", UnicodeData);
+    
+    // Проверяем, что буфер достаточного размера
+    if (StringLen >= MacStringSize) {
+      StringLen = MacStringSize - 1;
+    }
+    
+    // Конвертируем Unicode в ASCII
+    for (Index = 0; Index < StringLen; Index++) {
+      MacString[Index] = (CHAR8)UnicodeData[Index];
+    }
+    MacString[StringLen] = '\0';
+  } else {
+    // Предполагаем, что данные уже в ASCII формате
+    Print(L"DEBUG: Assuming ASCII string format\n");
+    StringLen = MacDataSize < MacStringSize ? MacDataSize : MacStringSize - 1;
+    
+    // Если последний байт равен 0, это может быть ASCII строка с нулевым завершением
+    if (MacDataSize > 0 && ((UINT8*)MacData)[MacDataSize-1] == 0) {
+      // Это ASCII строка с нулевым завершением, копируем её
+      AsciiStrCpyS(MacString, MacStringSize, (CHAR8*)MacData);
+      Print(L"DEBUG: Found null-terminated ASCII string\n");
+    } else {
+      // Копируем данные как есть
+      CopyMem(MacString, MacData, StringLen);
+      MacString[StringLen] = '\0';
+    }
+  }
+  
+  Print(L"DEBUG: Final ASCII MAC string: %a\n", MacString);
+  
+  // Проверяем, что получившаяся строка является валидным MAC-адресом
+  // и добавляем разделители, если их нет
+  if (AsciiStrLen(MacString) == 12) {
+    // Формат без разделителей (AABBCCDDEEFF), преобразуем в формат с разделителями
+    CHAR8 TempMacString[18];
+    
+    // Проверяем, что все символы являются шестнадцатеричными
+    for (Index = 0; Index < 12; Index++) {
+      if (!((MacString[Index] >= '0' && MacString[Index] <= '9') ||
+            (MacString[Index] >= 'A' && MacString[Index] <= 'F') ||
+            (MacString[Index] >= 'a' && MacString[Index] <= 'f'))) {
+        break;
+      }
+    }
+    
+    // Если все символы шестнадцатеричные, форматируем строку
+    if (Index == 12) {
+      AsciiSPrint(
+        TempMacString,
+        sizeof(TempMacString),
+        "%c%c:%c%c:%c%c:%c%c:%c%c:%c%c",
+        MacString[0], MacString[1], MacString[2], MacString[3],
+        MacString[4], MacString[5], MacString[6], MacString[7],
+        MacString[8], MacString[9], MacString[10], MacString[11]
+      );
+      
+      AsciiStrCpyS(MacString, MacStringSize, TempMacString);
+      Print(L"DEBUG: Reformatted MAC with separators: %a\n", MacString);
+    }
+  }
+  
+  // Освобождаем память
+  if (MacData != NULL) {
+    FreePool (MacData);
+  }
+  
+  return EFI_SUCCESS;
+}
+
+/**
+  Выводит MAC-адрес в читаемом формате.
+  
+  @param MacAddr  Указатель на строку с MAC-адресом
+**/
+VOID
+PrintMacAddress (
+  IN CONST CHAR8  *MacAddr
+  )
+{
+  // Проверяем входной параметр
+  if (MacAddr == NULL) {
+    Print (L"<Invalid MAC Address>\n");
+    return;
+  }
+  
+  // Выводим MAC-адрес, преобразуя ASCII в CHAR16 для Print
+  UINTN i;
+  for (i = 0; MacAddr[i] != '\0' && i < 100; i++) {
+    Print (L"%c", (CHAR16)MacAddr[i]);
+  }
+  Print (L"\n");
+}
+
+/**
+  Проверяет, соответствует ли MAC-адрес из UEFI переменной MAC-адресу сетевой карты.
+  
+  @param MacString     ASCII строка с MAC-адресом из UEFI переменной
+  @param DeviceName    Буфер для имени устройства с совпадающим MAC (может быть NULL)
+  @param DeviceNameSize Размер буфера для имени устройства
+  
+  @retval TRUE         MAC-адрес совпадает с MAC-адресом сетевой карты
+  @retval FALSE        MAC-адрес не совпадает ни с одним MAC-адресом
+**/
+BOOLEAN
+CheckMacAddressAgainstNetworkDevices (
+  IN  CONST CHAR8    *MacString,
+  OUT CHAR16         *DeviceName OPTIONAL,
+  IN  UINTN          DeviceNameSize
+  )
+{
+  EFI_STATUS                     Status;
+  EFI_HANDLE                     *HandleBuffer;
+  UINTN                          HandleCount;
+  UINTN                          Index;
+  EFI_SIMPLE_NETWORK_PROTOCOL    *Snp;
+  EFI_DEVICE_PATH_PROTOCOL       *DevicePath;
+  CHAR8                          CurrentMacStr[18];
+  BOOLEAN                        Found = FALSE;
+  
+  // Для отладки
+  Print(L"Target MAC: %a\n", MacString);
+  
+  // Получаем список всех устройств с Simple Network Protocol
+  Status = gBS->LocateHandleBuffer(
+                  ByProtocol,
+                  &gEfiSimpleNetworkProtocolGuid,
+                  NULL,
+                  &HandleCount,
+                  &HandleBuffer
+                  );
+                  
+  if (EFI_ERROR(Status) || HandleCount == 0) {
+    Print(L"Warning: No network interfaces found on this system! Status: %r\n", Status);
+    return FALSE;
+  }
+  
+  Print(L"Found %d network interfaces\n", HandleCount);
+  
+  // Перебираем все сетевые устройства
+  for (Index = 0; Index < HandleCount; Index++) {
+    Status = gBS->HandleProtocol(
+                    HandleBuffer[Index],
+                    &gEfiSimpleNetworkProtocolGuid,
+                    (VOID **)&Snp
+                    );
+                    
+    if (EFI_ERROR(Status) || Snp == NULL) {
+      Print(L"Warning: Failed to get SNP for interface %d. Status: %r\n", Index, Status);
+      continue;
+    }
+    
+    // Проверяем, инициализирован ли протокол
+    if (Snp->Mode == NULL) {
+      Print(L"Warning: SNP Mode is NULL for interface %d\n", Index);
+      continue;
+    }
+    
+    // Выводим информацию о состоянии сетевого интерфейса
+    Print(L"Network Interface %d State: %d\n", Index, Snp->Mode->State);
+    
+    // Выводим информацию о MAC-адресе
+    Print(L"Network Interface %d MAC: ", Index);
+    
+    // Преобразуем бинарный MAC-адрес в строку
+    FormatMacAddress(
+      &Snp->Mode->CurrentAddress.Addr[0],
+      CurrentMacStr
+    );
+    
+    // Выводим MAC-адрес
+    Print(L"%a\n", CurrentMacStr);
+    
+    // Сравниваем MAC-адреса
+    if (CompareMacAddresses(MacString, CurrentMacStr)) {
+      Print(L"MAC MATCH FOUND for interface %d!\n", Index);
+      Found = TRUE;
+      
+      // Если запрошено имя устройства, получаем его
+      if (DeviceName != NULL && DeviceNameSize > 0) {
+        ZeroMem(DeviceName, DeviceNameSize * sizeof(CHAR16));
+        
+        // Пытаемся получить Device Path для более дружественного имени
+        Status = gBS->HandleProtocol(
+                        HandleBuffer[Index],
+                        &gEfiDevicePathProtocolGuid,
+                        (VOID **)&DevicePath
+                        );
+                        
+        if (!EFI_ERROR(Status) && DevicePath != NULL) {
+          // Для простоты просто используем номер интерфейса
+          UnicodeSPrint(DeviceName, DeviceNameSize * sizeof(CHAR16), 
+                        L"Network Interface %u (MAC: ", Index);
+                        
+          // Добавляем MAC-адрес к имени
+          for (UINTN i = 0; i < AsciiStrLen(CurrentMacStr); i++) {
+            DeviceName[StrLen(DeviceName)] = (CHAR16)CurrentMacStr[i];
+          }
+          
+          // Закрываем скобку и завершаем строку
+          StrCatS(DeviceName, DeviceNameSize, L")");
+        } else {
+          // Если не удалось получить Device Path, используем индекс
+          UnicodeSPrint(DeviceName, DeviceNameSize * sizeof(CHAR16), 
+                        L"Network Interface %u (MAC: ", Index);
+                        
+          // Добавляем MAC-адрес к имени
+          for (UINTN i = 0; i < AsciiStrLen(CurrentMacStr); i++) {
+            DeviceName[StrLen(DeviceName)] = (CHAR16)CurrentMacStr[i];
+          }
+          
+          // Закрываем скобку и завершаем строку
+          StrCatS(DeviceName, DeviceNameSize, L")");
+        }
+      }
+      
+      break; // Нашли совпадение, выходим из цикла
+    }
+  }
+  
+  // Освобождаем буфер handles
+  FreePool(HandleBuffer);
+  
+  return Found;
+}
+
+/**
   Проверяет, совпадает ли серийный номер из указанной EFI переменной с 
   серийными номерами в SMBIOS информации.
   
   @param SerialVarName    Имя переменной UEFI с серийным номером
-  @param SerialVarGuid    GUID переменной UEFI
+  @param SerialVarGuid    GUID переменной UEFI (может быть NULL для поиска по всем GUID)
   
   @retval TRUE            Серийный номер совпадает
   @retval FALSE           Серийный номер не совпадает или произошла ошибка
@@ -1067,18 +1655,30 @@ CheckSerialNumber (
   CHAR16      SystemSn[MAX_BUFFER_SIZE];
   CHAR16      BaseBoardSn[MAX_BUFFER_SIZE];
   BOOLEAN     SnMatches = FALSE;
+  EFI_GUID    FoundGuid;
   
   // Получаем серийный номер из переменной UEFI
   Status = GetVariableData (
             SerialVarName,
             SerialVarGuid,
             &SnVarData,
-            &SnVarSize
+            &SnVarSize,
+            &FoundGuid
             );
             
   if (EFI_ERROR (Status)) {
-    Print (L"Error: Failed to get Serial Number from variable '%s'\n", SerialVarName);
+    Print (L"Error: Failed to get Serial Number from variable '%s': %r\n", SerialVarName, Status);
     return FALSE;
+  }
+  
+  // Для информации, выводим GUID найденной переменной, если GUID не был указан явно
+  if (SerialVarGuid == NULL) {
+    Print (L"Found variable '%s' with GUID: %08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X\n",
+           SerialVarName,
+           FoundGuid.Data1, FoundGuid.Data2, FoundGuid.Data3,
+           FoundGuid.Data4[0], FoundGuid.Data4[1], FoundGuid.Data4[2],
+           FoundGuid.Data4[3], FoundGuid.Data4[4], FoundGuid.Data4[5],
+           FoundGuid.Data4[6], FoundGuid.Data4[7]);
   }
   
   // Конвертируем данные в строку
@@ -1151,12 +1751,15 @@ CheckAndFlashValues (
   EFI_STATUS  Status;
   VOID        *SnVarData = NULL;         // Данные из переменной SerialVarName
   UINTN       SnVarSize = 0;
-  VOID        *MacVarData = NULL;        // Данные из переменной MacVarName
-  UINTN       MacVarSize = 0;
   BOOLEAN     SnMatches = FALSE;
   BOOLEAN     MacMatches = FALSE;
   UINTN       RetryCount;
   CHAR16      SnString[MAX_BUFFER_SIZE]; // Строка с серийным номером
+  CHAR8       MacString[MAX_BUFFER_SIZE]; // Строка с MAC-адресом в ASCII
+  CHAR16      MacDeviceName[MAX_BUFFER_SIZE]; // Имя устройства для MAC
+  EFI_GUID    FoundGuid;
+  BOOLEAN     SerialGuidAllocated = FALSE;
+  BOOLEAN     MacGuidAllocated = FALSE;
   
   if (Config->CheckOnly) {
     Print (L"Starting Serial Number and MAC verification (Check-Only Mode)...\n\n");
@@ -1171,15 +1774,35 @@ CheckAndFlashValues (
               Config->SerialVarName,
               Config->SerialVarGuid,
               &SnVarData,
-              &SnVarSize
+              &SnVarSize,
+              &FoundGuid
               );
               
     if (EFI_ERROR (Status)) {
-      Print (L"Error: Failed to get Serial Number from variable '%s'\n", Config->SerialVarName);
+      Print (L"Error: Failed to get Serial Number from variable '%s': %r\n", Config->SerialVarName, Status);
       return Status;
     }
     
-    // Конвертируем данные в строку для отображения и использования с AMIDEEFIx64.efi
+    // Если GUID не был указан явно, сохраняем найденный GUID
+    if (Config->SerialVarGuid == NULL) {
+      Config->SerialVarGuid = AllocateZeroPool(sizeof(EFI_GUID));
+      if (Config->SerialVarGuid == NULL) {
+        Print(L"Error: Failed to allocate memory for GUID\n");
+        FreePool(SnVarData);
+        return EFI_OUT_OF_RESOURCES;
+      }
+      CopyMem(Config->SerialVarGuid, &FoundGuid, sizeof(EFI_GUID));
+      SerialGuidAllocated = TRUE;
+      
+      Print(L"Found variable '%s' with GUID: %08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X\n",
+            Config->SerialVarName,
+            Config->SerialVarGuid->Data1, Config->SerialVarGuid->Data2, Config->SerialVarGuid->Data3,
+            Config->SerialVarGuid->Data4[0], Config->SerialVarGuid->Data4[1], Config->SerialVarGuid->Data4[2],
+            Config->SerialVarGuid->Data4[3], Config->SerialVarGuid->Data4[4], Config->SerialVarGuid->Data4[5],
+            Config->SerialVarGuid->Data4[6], Config->SerialVarGuid->Data4[7]);
+    }
+    
+    // Конвертируем данные в строку
     ZeroMem(SnString, sizeof(SnString));
     
     // Проверяем формат данных (UCS-2 или ASCII)
@@ -1207,16 +1830,17 @@ CheckAndFlashValues (
   
   // Проверяем, нужно ли проверять MAC-адрес
   if (Config->CheckMac) {
-    // Получаем MAC-адрес из переменной UEFI
-    Status = GetVariableData (
+    // Получаем MAC-адрес из переменной UEFI и преобразуем в ASCII строку
+    Status = GetMacAddressAsAscii (
               Config->MacVarName,
               Config->MacVarGuid,
-              &MacVarData,
-              &MacVarSize
+              MacString,
+              sizeof(MacString),
+              &FoundGuid
               );
               
     if (EFI_ERROR (Status)) {
-      Print (L"Error: Failed to get MAC Address from variable '%s'\n", Config->MacVarName);
+      Print (L"Error: Failed to get MAC Address from variable '%s': %r\n", Config->MacVarName, Status);
       
       // Если SN не прошит, то пытаемся его прошить независимо от MAC
       if (SnVarData != NULL) {
@@ -1228,16 +1852,55 @@ CheckAndFlashValues (
       if (SnVarData != NULL) {
         FreePool (SnVarData);
       }
+      // Освобождаем память GUID, если была выделена
+      if (SerialGuidAllocated && Config->SerialVarGuid != NULL) {
+        FreePool(Config->SerialVarGuid);
+      }
       return Status;
     }
     
-    // Здесь следует добавить код для проверки MAC-адресов сетевых интерфейсов
-    // Поскольку это требует использования специфичных протоколов, оставим как заглушку
+    // Если GUID не был указан явно, сохраняем найденный GUID
+    if (Config->MacVarGuid == NULL) {
+      Config->MacVarGuid = AllocateZeroPool(sizeof(EFI_GUID));
+      if (Config->MacVarGuid == NULL) {
+        Print(L"Error: Failed to allocate memory for GUID\n");
+        if (SnVarData != NULL) {
+          FreePool(SnVarData);
+        }
+        // Освобождаем память GUID, если была выделена
+        if (SerialGuidAllocated && Config->SerialVarGuid != NULL) {
+          FreePool(Config->SerialVarGuid);
+        }
+        return EFI_OUT_OF_RESOURCES;
+      }
+      CopyMem(Config->MacVarGuid, &FoundGuid, sizeof(EFI_GUID));
+      MacGuidAllocated = TRUE;
+      
+      Print(L"Found variable '%s' with GUID: %08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X\n",
+            Config->MacVarName,
+            Config->MacVarGuid->Data1, Config->MacVarGuid->Data2, Config->MacVarGuid->Data3,
+            Config->MacVarGuid->Data4[0], Config->MacVarGuid->Data4[1], Config->MacVarGuid->Data4[2],
+            Config->MacVarGuid->Data4[3], Config->MacVarGuid->Data4[4], Config->MacVarGuid->Data4[5],
+            Config->MacVarGuid->Data4[6], Config->MacVarGuid->Data4[7]);
+    }
+    
+    // Выводим целевой MAC-адрес
     Print (L"Target MAC Address from EFI variable: ");
-    PrintUcsString (MacVarData, MacVarSize);
-    Print (L"Warning: MAC Address checking is not implemented yet.\n");
-    Print (L"Assuming MAC Address does not match for testing.\n");
-    MacMatches = FALSE;
+    PrintMacAddress(MacString);
+    
+    // Проверяем, совпадает ли MAC-адрес с каким-либо MAC-адресом сетевой карты
+    ZeroMem(MacDeviceName, sizeof(MacDeviceName));
+    MacMatches = CheckMacAddressAgainstNetworkDevices(
+                   MacString,
+                   MacDeviceName,
+                   MAX_BUFFER_SIZE
+                   );
+                   
+    if (MacMatches) {
+      Print (L"MAC Address matches the network interface: %s\n", MacDeviceName);
+    } else {
+      Print (L"MAC Address does NOT match any network interface in the system.\n");
+    }
     
   } else {
     // Если не проверяем MAC, считаем его совпадающим
@@ -1253,13 +1916,20 @@ CheckAndFlashValues (
     }
     if (Config->CheckMac) {
       Print (L"MAC Address: %s\n", MacMatches ? L"MATCH" : L"MISMATCH");
+      if (MacMatches) {
+        Print (L"Matching Network Interface: %s\n", MacDeviceName);
+      }
     }
     
     if (SnVarData != NULL) {
       FreePool (SnVarData);
     }
-    if (MacVarData != NULL) {
-      FreePool (MacVarData);
+    // Освобождаем память GUID, если была выделена
+    if (SerialGuidAllocated && Config->SerialVarGuid != NULL) {
+      FreePool(Config->SerialVarGuid);
+    }
+    if (MacGuidAllocated && Config->MacVarGuid != NULL) {
+      FreePool(Config->MacVarGuid);
     }
     
     return (SnMatches && MacMatches) ? EFI_SUCCESS : EFI_DEVICE_ERROR;
@@ -1272,8 +1942,12 @@ FlashSerial:
     if (SnVarData != NULL) {
       FreePool (SnVarData);
     }
-    if (MacVarData != NULL) {
-      FreePool (MacVarData);
+    // Освобождаем память GUID, если была выделена
+    if (SerialGuidAllocated && Config->SerialVarGuid != NULL) {
+      FreePool(Config->SerialVarGuid);
+    }
+    if (MacGuidAllocated && Config->MacVarGuid != NULL) {
+      FreePool(Config->MacVarGuid);
     }
     return EFI_SUCCESS;
   }
@@ -1305,8 +1979,12 @@ FlashSerial:
             if (SnVarData != NULL) {
               FreePool (SnVarData);
             }
-            if (MacVarData != NULL) {
-              FreePool (MacVarData);
+            // Освобождаем память GUID, если была выделена
+            if (SerialGuidAllocated && Config->SerialVarGuid != NULL) {
+              FreePool(Config->SerialVarGuid);
+            }
+            if (MacGuidAllocated && Config->MacVarGuid != NULL) {
+              FreePool(Config->MacVarGuid);
             }
             return RebootToBoot();
           }
@@ -1314,8 +1992,12 @@ FlashSerial:
           if (SnVarData != NULL) {
             FreePool (SnVarData);
           }
-          if (MacVarData != NULL) {
-            FreePool (MacVarData);
+          // Освобождаем память GUID, если была выделена
+          if (SerialGuidAllocated && Config->SerialVarGuid != NULL) {
+            FreePool(Config->SerialVarGuid);
+          }
+          if (MacGuidAllocated && Config->MacVarGuid != NULL) {
+            FreePool(Config->MacVarGuid);
           }
           return EFI_SUCCESS;
         }
@@ -1331,8 +2013,12 @@ FlashSerial:
     if (SnVarData != NULL) {
       FreePool (SnVarData);
     }
-    if (MacVarData != NULL) {
-      FreePool (MacVarData);
+    // Освобождаем память GUID, если была выделена
+    if (SerialGuidAllocated && Config->SerialVarGuid != NULL) {
+      FreePool(Config->SerialVarGuid);
+    }
+    if (MacGuidAllocated && Config->MacVarGuid != NULL) {
+      FreePool(Config->MacVarGuid);
     }
     return EFI_DEVICE_ERROR;
   }
@@ -1344,8 +2030,12 @@ FlashSerial:
     if (SnVarData != NULL) {
       FreePool (SnVarData);
     }
-    if (MacVarData != NULL) {
-      FreePool (MacVarData);
+    // Освобождаем память GUID, если была выделена
+    if (SerialGuidAllocated && Config->SerialVarGuid != NULL) {
+      FreePool(Config->SerialVarGuid);
+    }
+    if (MacGuidAllocated && Config->MacVarGuid != NULL) {
+      FreePool(Config->MacVarGuid);
     }
     return RebootToBoot();
   }
@@ -1353,8 +2043,12 @@ FlashSerial:
   if (SnVarData != NULL) {
     FreePool (SnVarData);
   }
-  if (MacVarData != NULL) {
-    FreePool (MacVarData);
+  // Освобождаем память GUID, если была выделена
+  if (SerialGuidAllocated && Config->SerialVarGuid != NULL) {
+    FreePool(Config->SerialVarGuid);
+  }
+  if (MacGuidAllocated && Config->MacVarGuid != NULL) {
+    FreePool(Config->MacVarGuid);
   }
   return EFI_SUCCESS;
 }
@@ -1415,7 +2109,6 @@ ShellAppMain (
   BOOLEAN      CheckOnlyMode = FALSE;  // Флаг для режима только проверки
   BOOLEAN      BoardInfoMode = FALSE;  // Флаг для вывода информации о плате
   CHECK_CONFIG Config;
-  EFI_GUID     DefaultGuid = mCustomVarGuid;
   
   // Очищаем экран
   gST->ConOut->ClearScreen (gST->ConOut);
@@ -1425,8 +2118,8 @@ ShellAppMain (
   Config.SerialVarName = NULL;  // По умолчанию не задано
   Config.MacVarName = NULL;     // По умолчанию не задано
   Config.AmideEfiPath = L"AMIDEEFIx64.efi";
-  Config.SerialVarGuid = &DefaultGuid;
-  Config.MacVarGuid = &DefaultGuid;
+  Config.SerialVarGuid = NULL;  // NULL для поиска по всем GUID
+  Config.MacVarGuid = NULL;     // NULL для поиска по всем GUID
   Config.CheckSn = FALSE;
   Config.CheckMac = FALSE;
   Config.CheckOnly = FALSE;
@@ -1522,18 +2215,31 @@ ShellAppMain (
     }
   }
   
-  // Если указан GUID, пытаемся его распарсить
+  // Если указан GUID, пытаемся его распарсить и устанавливаем его для обоих параметров
   if (GuidPrefix != NULL) {
-    EFI_GUID TempGuid;
-    if (ParseGuidPrefix (GuidPrefix, &TempGuid)) {
-      Config.SerialVarGuid = &TempGuid;
-      Config.MacVarGuid = &TempGuid;
+    EFI_GUID *TempGuid = AllocateZeroPool(sizeof(EFI_GUID));
+    if (TempGuid == NULL) {
+      Print (L"Error: Failed to allocate memory for GUID\n");
+      return EFI_OUT_OF_RESOURCES;
+    }
+    
+    if (ParseGuidPrefix (GuidPrefix, TempGuid)) {
+      Config.SerialVarGuid = TempGuid;
+      Config.MacVarGuid = TempGuid;
+    } else {
+      Print (L"Error: Invalid GUID prefix '%s'\n", GuidPrefix);
+      FreePool(TempGuid);
+      return EFI_INVALID_PARAMETER;
     }
   }
   
   // Режим вывода информации о материнской плате
   if (BoardInfoMode) {
     Status = DisplayBaseBoardInfo();
+    // Освобождаем выделенную память для GUID, если была выделена
+    if (GuidPrefix != NULL && Config.SerialVarGuid != NULL) {
+      FreePool(Config.SerialVarGuid);
+    }
     return (INTN)Status;
   }
   
@@ -1543,6 +2249,10 @@ ShellAppMain (
     if (!Config.CheckSn && !Config.CheckMac) {
       Print (L"Error: You must specify at least one value to check (--vsn or --vmac)\n");
       PrintUsage();
+      // Освобождаем выделенную память для GUID, если была выделена
+      if (GuidPrefix != NULL && Config.SerialVarGuid != NULL) {
+        FreePool(Config.SerialVarGuid);
+      }
       return EFI_INVALID_PARAMETER;
     }
     
@@ -1551,9 +2261,16 @@ ShellAppMain (
     
     // Проверяем и перепрошиваем значения (если не CheckOnlyMode)
     Status = CheckAndFlashValues (&Config);
+    
+    // Здесь не нужно освобождать Config.SerialVarGuid, так как это делается в CheckAndFlashValues
   } else {
     // Стандартный режим - просто отображаем переменную
     Status = FindAndPrintVariable (VariableName, GuidPrefix, OutputType);
+    
+    // Освобождаем выделенную память для GUID, если была выделена
+    if (GuidPrefix != NULL && Config.SerialVarGuid != NULL) {
+      FreePool(Config.SerialVarGuid);
+    }
   }
   
   // Ждем нажатия клавиши, если не используется rawtype
