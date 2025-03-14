@@ -22,6 +22,14 @@
 #include <IndustryStandard/SmBios.h>
 #include <Protocol/Smbios.h>
 #include <Protocol/SimpleNetwork.h>
+#include <Protocol/SimpleTextOut.h>
+
+// Определения для атрибутов текста
+#define TEXT_ATTR_NORMAL  EFI_TEXT_ATTR(EFI_LIGHTGRAY, EFI_BLACK)
+#define TEXT_ATTR_ERROR   EFI_TEXT_ATTR(EFI_RED | EFI_BRIGHT, EFI_BLACK)
+#define TEXT_ATTR_SUCCESS EFI_TEXT_ATTR(EFI_GREEN | EFI_BRIGHT, EFI_BLACK)
+#define TEXT_ATTR_INFO    EFI_TEXT_ATTR(EFI_WHITE, EFI_BLACK)
+#define TEXT_ATTR_WARNING EFI_TEXT_ATTR(EFI_BROWN | EFI_BRIGHT, EFI_BLACK)
 
 // Стандартные GUID для переменных
 static EFI_GUID mCustomVarGuid = {
@@ -82,6 +90,31 @@ typedef struct {
   EFI_GUID  *MacVarGuid;            // GUID для переменной с MAC-адресом
 } CHECK_CONFIG;
 
+// Функции для вывода текста в разных цветах
+VOID
+PrintError (
+  IN CONST CHAR16  *Format,
+  ...
+  );
+
+VOID
+PrintSuccess (
+  IN CONST CHAR16  *Format,
+  ...
+  );
+
+VOID
+PrintInfo (
+  IN CONST CHAR16  *Format,
+  ...
+  );
+
+VOID
+PrintWarning (
+  IN CONST CHAR16  *Format,
+  ...
+  );
+
 // Прототипы функций
 EFI_STATUS
 RebootToBoot (
@@ -134,6 +167,103 @@ EFI_STATUS
 DisplayBaseBoardInfo (
   VOID
   );
+
+// Функции для вывода текста в разных цветах - реализация
+VOID
+PrintError (
+  IN CONST CHAR16  *Format,
+  ...
+  )
+{
+  VA_LIST  Marker;
+  UINTN    OriginalAttribute;
+  
+  // Сохраняем оригинальный атрибут
+  OriginalAttribute = gST->ConOut->Mode->Attribute;
+  
+  // Устанавливаем красный цвет текста
+  gST->ConOut->SetAttribute (gST->ConOut, TEXT_ATTR_ERROR);
+  
+  // Выводим текст
+  VA_START (Marker, Format);
+  VPrint (Format, Marker);
+  VA_END (Marker);
+  
+  // Восстанавливаем оригинальный атрибут
+  gST->ConOut->SetAttribute (gST->ConOut, OriginalAttribute);
+}
+
+VOID
+PrintSuccess (
+  IN CONST CHAR16  *Format,
+  ...
+  )
+{
+  VA_LIST  Marker;
+  UINTN    OriginalAttribute;
+  
+  // Сохраняем оригинальный атрибут
+  OriginalAttribute = gST->ConOut->Mode->Attribute;
+  
+  // Устанавливаем зеленый цвет текста
+  gST->ConOut->SetAttribute (gST->ConOut, TEXT_ATTR_SUCCESS);
+  
+  // Выводим текст
+  VA_START (Marker, Format);
+  VPrint (Format, Marker);
+  VA_END (Marker);
+  
+  // Восстанавливаем оригинальный атрибут
+  gST->ConOut->SetAttribute (gST->ConOut, OriginalAttribute);
+}
+
+VOID
+PrintInfo (
+  IN CONST CHAR16  *Format,
+  ...
+  )
+{
+  VA_LIST  Marker;
+  UINTN    OriginalAttribute;
+  
+  // Сохраняем оригинальный атрибут
+  OriginalAttribute = gST->ConOut->Mode->Attribute;
+  
+  // Устанавливаем белый цвет текста
+  gST->ConOut->SetAttribute (gST->ConOut, TEXT_ATTR_INFO);
+  
+  // Выводим текст
+  VA_START (Marker, Format);
+  VPrint (Format, Marker);
+  VA_END (Marker);
+  
+  // Восстанавливаем оригинальный атрибут
+  gST->ConOut->SetAttribute (gST->ConOut, OriginalAttribute);
+}
+
+VOID
+PrintWarning (
+  IN CONST CHAR16  *Format,
+  ...
+  )
+{
+  VA_LIST  Marker;
+  UINTN    OriginalAttribute;
+  
+  // Сохраняем оригинальный атрибут
+  OriginalAttribute = gST->ConOut->Mode->Attribute;
+  
+  // Устанавливаем желтый цвет текста
+  gST->ConOut->SetAttribute (gST->ConOut, TEXT_ATTR_WARNING);
+  
+  // Выводим текст
+  VA_START (Marker, Format);
+  VPrint (Format, Marker);
+  VA_END (Marker);
+  
+  // Восстанавливаем оригинальный атрибут
+  gST->ConOut->SetAttribute (gST->ConOut, OriginalAttribute);
+}
 
 /**
   Функция для вывода HEX-дампа данных.
@@ -504,7 +634,7 @@ FindAndPrintVariable (
   if (GuidPrefix != NULL && StrLen (GuidPrefix) > 0) {
     GuidSpecified = ParseGuidPrefix (GuidPrefix, &TargetGuid);
     if (!GuidSpecified) {
-      Print (L"Error: Invalid GUID prefix '%s'\n", GuidPrefix);
+      PrintError (L"Error: Invalid GUID prefix '%s'\n", GuidPrefix);
       return EFI_INVALID_PARAMETER;
     }
   }
@@ -533,8 +663,8 @@ FindAndPrintVariable (
       
       // Если режим вывода не "только данные", выводим информацию о переменной
       if (OutputType == OUTPUT_ALL) {
-        Print (L"Variable Name: %s\n", VariableName);
-        Print (L"GUID: %s (%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X)\n", 
+        PrintInfo (L"Variable Name: %s\n", VariableName);
+        PrintInfo (L"GUID: %s (%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X)\n", 
                GuidName,
                FoundGuid.Data1, FoundGuid.Data2, FoundGuid.Data3,
                FoundGuid.Data4[0], FoundGuid.Data4[1], FoundGuid.Data4[2],
@@ -550,16 +680,16 @@ FindAndPrintVariable (
                VariableData
                );
         
-        Print (L"Size: %d bytes\n", VariableSize);
-        Print (L"Attributes: 0x%08X\n\n", Attributes);
+        PrintInfo (L"Size: %d bytes\n", VariableSize);
+        PrintInfo (L"Attributes: 0x%08X\n\n", Attributes);
         
-        Print (L"Hexadecimal dump:\n");
+        PrintInfo (L"Hexadecimal dump:\n");
         PrintHexDump (VariableData, VariableSize);
         
-        Print (L"\nAs string (UCS-2): ");
+        PrintInfo (L"\nAs string (UCS-2): ");
         PrintUcsString (VariableData, VariableSize);
         
-        Print (L"As string (ASCII): ");
+        PrintInfo (L"As string (ASCII): ");
         PrintAsciiString (VariableData, VariableSize);
       } else {
         // Выводим только в указанном формате
@@ -593,9 +723,9 @@ FindAndPrintVariable (
       
       // Если режим вывода не "только данные", выводим информацию о переменной
       if (OutputType == OUTPUT_ALL) {
-        Print (L"Variable Name: %s\n", VariableName);
-        Print (L"GUID: ");
-        Print (L"%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X\n",
+        PrintInfo (L"Variable Name: %s\n", VariableName);
+        PrintInfo (L"GUID: ");
+        PrintInfo (L"%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X\n",
                TargetGuid.Data1, TargetGuid.Data2, TargetGuid.Data3,
                TargetGuid.Data4[0], TargetGuid.Data4[1], TargetGuid.Data4[2],
                TargetGuid.Data4[3], TargetGuid.Data4[4], TargetGuid.Data4[5],
@@ -610,16 +740,16 @@ FindAndPrintVariable (
                VariableData
                );
         
-        Print (L"Size: %d bytes\n", VariableSize);
-        Print (L"Attributes: 0x%08X\n\n", Attributes);
+        PrintInfo (L"Size: %d bytes\n", VariableSize);
+        PrintInfo (L"Attributes: 0x%08X\n\n", Attributes);
         
-        Print (L"Hexadecimal dump:\n");
+        PrintInfo (L"Hexadecimal dump:\n");
         PrintHexDump (VariableData, VariableSize);
         
-        Print (L"\nAs string (UCS-2): ");
+        PrintInfo (L"\nAs string (UCS-2): ");
         PrintUcsString (VariableData, VariableSize);
         
-        Print (L"As string (ASCII): ");
+        PrintInfo (L"As string (ASCII): ");
         PrintAsciiString (VariableData, VariableSize);
       } else {
         // Выводим только в указанном формате
@@ -646,11 +776,11 @@ FindAndPrintVariable (
   }
   
   if (!Found) {
-    Print (L"Variable '%s' not found", VariableName);
+    PrintError (L"Variable '%s' not found", VariableName);
     if (GuidSpecified) {
-      Print (L" with specified GUID");
+      PrintError (L" with specified GUID");
     }
-    Print (L"\n");
+    PrintError (L"\n");
     return EFI_NOT_FOUND;
   }
   
@@ -686,7 +816,7 @@ RebootToBoot (
                   );
                   
   if (EFI_ERROR (Status)) {
-    Print (L"Error: Failed to set boot option\n");
+    PrintError (L"Error: Failed to set boot option\n");
     return Status;
   }
   
@@ -700,19 +830,43 @@ RebootToBoot (
                   );
                   
   if (EFI_ERROR (Status)) {
-    Print (L"Error: Failed to set boot order\n");
+    PrintError (L"Error: Failed to set boot order\n");
     return Status;
   }
   
   // Ждем нажатия клавиши перед перезагрузкой
-  Print (L"Press any key to reboot to BOOTx64.efi...\n");
+  PrintInfo (L"Press any key to reboot to BOOTx64.efi...\n");
   gBS->WaitForEvent (1, &gST->ConIn->WaitForKey, NULL);
   gST->ConIn->ReadKeyStroke (gST->ConIn, &Key);
   
   // Перезагружаем систему
-  Print (L"Rebooting system to BOOTx64.efi...\n");
+  PrintInfo (L"Rebooting system to BOOTx64.efi...\n");
   gRT->ResetSystem (EfiResetWarm, EFI_SUCCESS, 0, NULL);
   
+  return EFI_SUCCESS;
+}
+
+/**
+  Выключает систему. Ожидает нажатия клавиши перед выключением.
+  
+  @retval EFI_SUCCESS   Команда выключения отправлена
+  @retval другое        Ошибка при отправке команды выключения
+**/
+EFI_STATUS
+PowerDownSystem (
+  VOID
+  )
+{
+  EFI_INPUT_KEY Key;
+  
+  PrintInfo (L"Press any key to shut down the system...\n");
+  gBS->WaitForEvent (1, &gST->ConIn->WaitForKey, NULL);
+  gST->ConIn->ReadKeyStroke (gST->ConIn, &Key);
+  
+  PrintInfo (L"Shutting down system...\n");
+  gRT->ResetSystem (EfiResetShutdown, EFI_SUCCESS, 0, NULL);
+  
+  // Этот код не должен выполниться, но возвращаем успешный статус на всякий случай
   return EFI_SUCCESS;
 }
 
@@ -736,7 +890,7 @@ RunAmideefi (
   
   // Проверяем существование файла
   if (ShellIsFile((CHAR16*)AmideEfiPath) != EFI_SUCCESS) {
-    Print(L"Error: AMIDEEFIx64.efi not found at '%s'\n", AmideEfiPath);
+    PrintError(L"Error: AMIDEEFIx64.efi not found at '%s'\n", AmideEfiPath);
     return EFI_NOT_FOUND;
   }
   
@@ -746,15 +900,15 @@ RunAmideefi (
                 L"%s /SS %s /BS %s", 
                 AmideEfiPath, SerialNumber, SerialNumber);
   
-  Print(L"Executing: %s\n", CommandLine);
+  PrintInfo(L"Executing: %s\n", CommandLine);
   
   // Запускаем как отдельную команду через Shell
   Status = ShellExecute(&gImageHandle, CommandLine, TRUE, NULL, NULL);
   
   if (EFI_ERROR(Status)) {
-    Print(L"Error: Failed to execute AMIDEEFIx64.efi: %r\n", Status);
+    PrintError(L"Error: Failed to execute AMIDEEFIx64.efi: %r\n", Status);
   } else {
-    Print(L"AMIDEEFIx64.efi executed successfully\n");
+    PrintSuccess(L"AMIDEEFIx64.efi executed successfully\n");
   }
   
   return Status;
@@ -831,7 +985,7 @@ GetSystemSerialNumber (
                 );
                 
   if (EFI_ERROR (Status)) {
-    Print (L"Error: Failed to locate SMBIOS protocol: %r\n", Status);
+    PrintError (L"Error: Failed to locate SMBIOS protocol: %r\n", Status);
     return Status;
   }
   
@@ -844,7 +998,7 @@ GetSystemSerialNumber (
   }
   
   if (EFI_ERROR (Status)) {
-    Print (L"Error: System Information record not found in SMBIOS: %r\n", Status);
+    PrintError (L"Error: System Information record not found in SMBIOS: %r\n", Status);
     return Status;
   }
   
@@ -863,7 +1017,7 @@ GetSystemSerialNumber (
              );
              
   if (EFI_ERROR (Status)) {
-    Print (L"Error: Failed to get System Serial Number string: %r\n", Status);
+    PrintError (L"Error: Failed to get System Serial Number string: %r\n", Status);
     return Status;
   }
   
@@ -903,7 +1057,7 @@ GetBaseBoardSerialNumber (
                 );
                 
   if (EFI_ERROR (Status)) {
-    Print (L"Error: Failed to locate SMBIOS protocol: %r\n", Status);
+    PrintError (L"Error: Failed to locate SMBIOS protocol: %r\n", Status);
     return Status;
   }
   
@@ -916,7 +1070,7 @@ GetBaseBoardSerialNumber (
   }
   
   if (EFI_ERROR (Status)) {
-    Print (L"Error: Baseboard Information record not found in SMBIOS: %r\n", Status);
+    PrintError (L"Error: Baseboard Information record not found in SMBIOS: %r\n", Status);
     return Status;
   }
   
@@ -935,7 +1089,7 @@ GetBaseBoardSerialNumber (
              );
              
   if (EFI_ERROR (Status)) {
-    Print (L"Error: Failed to get Baseboard Serial Number string: %r\n", Status);
+    PrintError (L"Error: Failed to get Baseboard Serial Number string: %r\n", Status);
     return Status;
   }
   
@@ -984,7 +1138,7 @@ PrintSystemInfo (
   // Получаем запись Type 1 (System Information)
   Type1Record = (SMBIOS_TABLE_TYPE1 *)Record;
   
-  Print (L"\n===== System Information =====\n\n");
+  PrintInfo (L"\n===== System Information =====\n\n");
   
   // Находим таблицу строк (она идет сразу после структуры)
   StringTable = (CHAR8 *)((UINT8 *)Type1Record + Type1Record->Hdr.Length);
@@ -993,43 +1147,43 @@ PrintSystemInfo (
   if (Type1Record->Manufacturer != 0) {
     ZeroMem (TempString, sizeof(TempString));
     GetSmbiosString (Type1Record->Manufacturer, StringTable, TempString, MAX_BUFFER_SIZE);
-    Print (L"Manufacturer: %s\n", TempString);
+    PrintInfo (L"Manufacturer: %s\n", TempString);
   } else {
-    Print (L"Manufacturer: <Not Specified>\n");
+    PrintInfo (L"Manufacturer: <Not Specified>\n");
   }
   
   // Выводим информацию о продукте
   if (Type1Record->ProductName != 0) {
     ZeroMem (TempString, sizeof(TempString));
     GetSmbiosString (Type1Record->ProductName, StringTable, TempString, MAX_BUFFER_SIZE);
-    Print (L"Product Name: %s\n", TempString);
+    PrintInfo (L"Product Name: %s\n", TempString);
   } else {
-    Print (L"Product Name: <Not Specified>\n");
+    PrintInfo (L"Product Name: <Not Specified>\n");
   }
   
   // Выводим информацию о версии
   if (Type1Record->Version != 0) {
     ZeroMem (TempString, sizeof(TempString));
     GetSmbiosString (Type1Record->Version, StringTable, TempString, MAX_BUFFER_SIZE);
-    Print (L"Version: %s\n", TempString);
+    PrintInfo (L"Version: %s\n", TempString);
   } else {
-    Print (L"Version: <Not Specified>\n");
+    PrintInfo (L"Version: <Not Specified>\n");
   }
   
   // Выводим серийный номер
   if (Type1Record->SerialNumber != 0) {
     ZeroMem (TempString, sizeof(TempString));
     GetSmbiosString (Type1Record->SerialNumber, StringTable, TempString, MAX_BUFFER_SIZE);
-    Print (L"Serial Number: %s\n", TempString);
+    PrintInfo (L"Serial Number: %s\n", TempString);
   } else {
-    Print (L"Serial Number: <Not Specified>\n");
+    PrintInfo (L"Serial Number: <Not Specified>\n");
   }
   
   // Выводим UUID если он доступен
   if (!Type1Record->Uuid.Data1) {
-    Print (L"UUID: <Not Specified>\n");
+    PrintInfo (L"UUID: <Not Specified>\n");
   } else {
-    Print (L"UUID: %08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X\n",
+    PrintInfo (L"UUID: %08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X\n",
            Type1Record->Uuid.Data1, Type1Record->Uuid.Data2, Type1Record->Uuid.Data3,
            Type1Record->Uuid.Data4[0], Type1Record->Uuid.Data4[1], Type1Record->Uuid.Data4[2],
            Type1Record->Uuid.Data4[3], Type1Record->Uuid.Data4[4], Type1Record->Uuid.Data4[5],
@@ -1064,7 +1218,7 @@ DisplayBaseBoardInfo (
                 );
                 
   if (EFI_ERROR (Status)) {
-    Print (L"Error: Failed to locate SMBIOS protocol: %r\n", Status);
+    PrintError (L"Error: Failed to locate SMBIOS protocol: %r\n", Status);
     return Status;
   }
   
@@ -1077,14 +1231,14 @@ DisplayBaseBoardInfo (
   }
   
   if (EFI_ERROR (Status)) {
-    Print (L"Error: Baseboard Information record not found in SMBIOS: %r\n", Status);
+    PrintError (L"Error: Baseboard Information record not found in SMBIOS: %r\n", Status);
     return Status;
   }
   
   // Получаем запись Type 2 (Baseboard Information)
   Type2Record = (SMBIOS_TABLE_TYPE2 *)Record;
   
-  Print (L"\n===== Baseboard Information =====\n\n");
+  PrintInfo (L"\n===== Baseboard Information =====\n\n");
   
   // Находим таблицу строк (она идет сразу после структуры)
   StringTable = (CHAR8 *)((UINT8 *)Type2Record + Type2Record->Hdr.Length);
@@ -1093,54 +1247,54 @@ DisplayBaseBoardInfo (
   if (Type2Record->Manufacturer != 0) {
     ZeroMem (TempString, sizeof(TempString));
     GetSmbiosString (Type2Record->Manufacturer, StringTable, TempString, MAX_BUFFER_SIZE);
-    Print (L"Manufacturer: %s\n", TempString);
+    PrintInfo (L"Manufacturer: %s\n", TempString);
   } else {
-    Print (L"Manufacturer: <Not Specified>\n");
+    PrintInfo (L"Manufacturer: <Not Specified>\n");
   }
   
   // Выводим информацию о продукте
   if (Type2Record->ProductName != 0) {
     ZeroMem (TempString, sizeof(TempString));
     GetSmbiosString (Type2Record->ProductName, StringTable, TempString, MAX_BUFFER_SIZE);
-    Print (L"Product Name: %s\n", TempString);
+    PrintInfo (L"Product Name: %s\n", TempString);
   } else {
-    Print (L"Product Name: <Not Specified>\n");
+    PrintInfo (L"Product Name: <Not Specified>\n");
   }
   
   // Выводим информацию о версии
   if (Type2Record->Version != 0) {
     ZeroMem (TempString, sizeof(TempString));
     GetSmbiosString (Type2Record->Version, StringTable, TempString, MAX_BUFFER_SIZE);
-    Print (L"Version: %s\n", TempString);
+    PrintInfo (L"Version: %s\n", TempString);
   } else {
-    Print (L"Version: <Not Specified>\n");
+    PrintInfo (L"Version: <Not Specified>\n");
   }
   
   // Выводим серийный номер
   if (Type2Record->SerialNumber != 0) {
     ZeroMem (TempString, sizeof(TempString));
     GetSmbiosString (Type2Record->SerialNumber, StringTable, TempString, MAX_BUFFER_SIZE);
-    Print (L"Serial Number: %s\n", TempString);
+    PrintInfo (L"Serial Number: %s\n", TempString);
   } else {
-    Print (L"Serial Number: <Not Specified>\n");
+    PrintInfo (L"Serial Number: <Not Specified>\n");
   }
   
   // Выводим тег актива
   if (Type2Record->AssetTag != 0) {
     ZeroMem (TempString, sizeof(TempString));
     GetSmbiosString (Type2Record->AssetTag, StringTable, TempString, MAX_BUFFER_SIZE);
-    Print (L"Asset Tag: %s\n", TempString);
+    PrintInfo (L"Asset Tag: %s\n", TempString);
   } else {
-    Print (L"Asset Tag: <Not Specified>\n");
+    PrintInfo (L"Asset Tag: <Not Specified>\n");
   }
   
   // Выводим особенности платы
-  Print (L"Feature Flags: 0x%02X\n", Type2Record->FeatureFlag);
-  if (Type2Record->FeatureFlag.Motherboard)            Print(L"  - Hosting Board\n");
-  if (Type2Record->FeatureFlag.RequiresDaughterCard)   Print(L"  - Requires Daughter Board\n");
-  if (Type2Record->FeatureFlag.Removable)              Print(L"  - Removable\n");
-  if (Type2Record->FeatureFlag.Replaceable)            Print(L"  - Replaceable\n");
-  if (Type2Record->FeatureFlag.HotSwappable)           Print(L"  - Hot Swappable\n");
+  PrintInfo (L"Feature Flags: 0x%02X\n", Type2Record->FeatureFlag);
+  if (Type2Record->FeatureFlag.Motherboard)            PrintInfo(L"  - Hosting Board\n");
+  if (Type2Record->FeatureFlag.RequiresDaughterCard)   PrintInfo(L"  - Requires Daughter Board\n");
+  if (Type2Record->FeatureFlag.Removable)              PrintInfo(L"  - Removable\n");
+  if (Type2Record->FeatureFlag.Replaceable)            PrintInfo(L"  - Replaceable\n");
+  if (Type2Record->FeatureFlag.HotSwappable)           PrintInfo(L"  - Hot Swappable\n");
 
 
   
@@ -1148,9 +1302,9 @@ DisplayBaseBoardInfo (
   if (Type2Record->LocationInChassis != 0) {
     ZeroMem (TempString, sizeof(TempString));
     GetSmbiosString (Type2Record->LocationInChassis, StringTable, TempString, MAX_BUFFER_SIZE);
-    Print (L"Location in Chassis: %s\n", TempString);
+    PrintInfo (L"Location in Chassis: %s\n", TempString);
   } else {
-    Print (L"Location in Chassis: <Not Specified>\n");
+    PrintInfo (L"Location in Chassis: <Not Specified>\n");
   }
   
   // Выводим тип платы
@@ -1172,9 +1326,9 @@ DisplayBaseBoardInfo (
   
   UINT8 BoardType = Type2Record->BoardType;
   if (BoardType < (sizeof(BoardTypes) / sizeof(BoardTypes[0]))) {
-    Print (L"Board Type: %s\n", BoardTypes[BoardType]);
+    PrintInfo (L"Board Type: %s\n", BoardTypes[BoardType]);
   } else {
-    Print (L"Board Type: Unknown (%d)\n", BoardType);
+    PrintInfo (L"Board Type: Unknown (%d)\n", BoardType);
   }
   
   // Выводим дополнительную информацию о системе из Type 1
@@ -1249,8 +1403,8 @@ CompareMacAddresses (
   // Если нормализованные строки имеют по 12 символов (6 байт MAC), сравниваем их
   if (AsciiStrLen(NormalizedMac1) == 12 && AsciiStrLen(NormalizedMac2) == 12) {
     // Для отладки
-    Print(L"Normalized MAC 1: %a\n", NormalizedMac1);
-    Print(L"Normalized MAC 2: %a\n", NormalizedMac2);
+    PrintInfo(L"Normalized MAC 1: %a\n", NormalizedMac1);
+    PrintInfo(L"Normalized MAC 2: %a\n", NormalizedMac2);
     
     return (AsciiStrnCmp(NormalizedMac1, NormalizedMac2, 12) == 0);
   }
@@ -1316,10 +1470,10 @@ CompareMacAddresses (
   
   // Для отладки
   if (AsciiStrLen(NormalizedMac1) == 12 && AsciiStrLen(NormalizedMac2) == 12) {
-    Print(L"Binary MAC 1: %02X:%02X:%02X:%02X:%02X:%02X\n",
+    PrintInfo(L"Binary MAC 1: %02X:%02X:%02X:%02X:%02X:%02X\n",
           BinaryMac1[0], BinaryMac1[1], BinaryMac1[2],
           BinaryMac1[3], BinaryMac1[4], BinaryMac1[5]);
-    Print(L"Binary MAC 2: %02X:%02X:%02X:%02X:%02X:%02X\n",
+    PrintInfo(L"Binary MAC 2: %02X:%02X:%02X:%02X:%02X:%02X\n",
           BinaryMac2[0], BinaryMac2[1], BinaryMac2[2],
           BinaryMac2[3], BinaryMac2[4], BinaryMac2[5]);
   }
@@ -1401,25 +1555,25 @@ GetMacAddressAsAscii (
     return Status;
   }
   
-  Print(L"DEBUG: MAC variable size: %d bytes\n", MacDataSize);
-  Print(L"DEBUG: MAC variable raw data: ");
+  PrintInfo(L"DEBUG: MAC variable size: %d bytes\n", MacDataSize);
+  PrintInfo(L"DEBUG: MAC variable raw data: ");
   for (Index = 0; Index < MIN(MacDataSize, 20); Index++) {
-    Print(L"%02X ", ((UINT8*)MacData)[Index]);
+    PrintInfo(L"%02X ", ((UINT8*)MacData)[Index]);
   }
-  Print(L"\n");
+  PrintInfo(L"\n");
   
   // Проверяем размер данных для разных форматов
   if (MacDataSize == 6) {
     // Бинарный MAC-адрес (6 байт)
-    Print(L"DEBUG: Detected binary MAC format (6 bytes)\n");
+    PrintInfo(L"DEBUG: Detected binary MAC format (6 bytes)\n");
     FormatMacAddress((UINT8*)MacData, MacString);
   } else if (MacDataSize >= 2 && ((CHAR16*)MacData)[MacDataSize/2 - 1] == 0) {
     // Данные в UCS-2 формате, конвертируем в ASCII
-    Print(L"DEBUG: Detected UCS-2 string format\n");
+    PrintInfo(L"DEBUG: Detected UCS-2 string format\n");
     CHAR16 *UnicodeData = (CHAR16*)MacData;
     StringLen = StrLen(UnicodeData);
     
-    Print(L"DEBUG: UCS-2 MAC string: %s\n", UnicodeData);
+    PrintInfo(L"DEBUG: UCS-2 MAC string: %s\n", UnicodeData);
     
     // Проверяем, что буфер достаточного размера
     if (StringLen >= MacStringSize) {
@@ -1433,14 +1587,14 @@ GetMacAddressAsAscii (
     MacString[StringLen] = '\0';
   } else {
     // Предполагаем, что данные уже в ASCII формате
-    Print(L"DEBUG: Assuming ASCII string format\n");
+    PrintInfo(L"DEBUG: Assuming ASCII string format\n");
     StringLen = MacDataSize < MacStringSize ? MacDataSize : MacStringSize - 1;
     
     // Если последний байт равен 0, это может быть ASCII строка с нулевым завершением
     if (MacDataSize > 0 && ((UINT8*)MacData)[MacDataSize-1] == 0) {
       // Это ASCII строка с нулевым завершением, копируем её
       AsciiStrCpyS(MacString, MacStringSize, (CHAR8*)MacData);
-      Print(L"DEBUG: Found null-terminated ASCII string\n");
+      PrintInfo(L"DEBUG: Found null-terminated ASCII string\n");
     } else {
       // Копируем данные как есть
       CopyMem(MacString, MacData, StringLen);
@@ -1448,7 +1602,7 @@ GetMacAddressAsAscii (
     }
   }
   
-  Print(L"DEBUG: Final ASCII MAC string: %a\n", MacString);
+  PrintInfo(L"DEBUG: Final ASCII MAC string: %a\n", MacString);
   
   // Проверяем, что получившаяся строка является валидным MAC-адресом
   // и добавляем разделители, если их нет
@@ -1477,7 +1631,7 @@ GetMacAddressAsAscii (
       );
       
       AsciiStrCpyS(MacString, MacStringSize, TempMacString);
-      Print(L"DEBUG: Reformatted MAC with separators: %a\n", MacString);
+      PrintInfo(L"DEBUG: Reformatted MAC with separators: %a\n", MacString);
     }
   }
   
@@ -1501,16 +1655,16 @@ PrintMacAddress (
 {
   // Проверяем входной параметр
   if (MacAddr == NULL) {
-    Print (L"<Invalid MAC Address>\n");
+    PrintInfo (L"<Invalid MAC Address>\n");
     return;
   }
   
   // Выводим MAC-адрес, преобразуя ASCII в CHAR16 для Print
   UINTN i;
   for (i = 0; MacAddr[i] != '\0' && i < 100; i++) {
-    Print (L"%c", (CHAR16)MacAddr[i]);
+    PrintInfo (L"%c", (CHAR16)MacAddr[i]);
   }
-  Print (L"\n");
+  PrintInfo (L"\n");
 }
 
 /**
@@ -1540,7 +1694,7 @@ CheckMacAddressAgainstNetworkDevices (
   BOOLEAN                        Found = FALSE;
   
   // Для отладки
-  Print(L"Target MAC: %a\n", MacString);
+  PrintInfo(L"Target MAC: %a\n", MacString);
   
   // Получаем список всех устройств с Simple Network Protocol
   Status = gBS->LocateHandleBuffer(
@@ -1552,11 +1706,11 @@ CheckMacAddressAgainstNetworkDevices (
                   );
                   
   if (EFI_ERROR(Status) || HandleCount == 0) {
-    Print(L"Warning: No network interfaces found on this system! Status: %r\n", Status);
+    PrintWarning(L"Warning: No network interfaces found on this system! Status: %r\n", Status);
     return FALSE;
   }
   
-  Print(L"Found %d network interfaces\n", HandleCount);
+  PrintInfo(L"Found %d network interfaces\n", HandleCount);
   
   // Перебираем все сетевые устройства
   for (Index = 0; Index < HandleCount; Index++) {
@@ -1567,21 +1721,21 @@ CheckMacAddressAgainstNetworkDevices (
                     );
                     
     if (EFI_ERROR(Status) || Snp == NULL) {
-      Print(L"Warning: Failed to get SNP for interface %d. Status: %r\n", Index, Status);
+      PrintWarning(L"Warning: Failed to get SNP for interface %d. Status: %r\n", Index, Status);
       continue;
     }
     
     // Проверяем, инициализирован ли протокол
     if (Snp->Mode == NULL) {
-      Print(L"Warning: SNP Mode is NULL for interface %d\n", Index);
+      PrintWarning(L"Warning: SNP Mode is NULL for interface %d\n", Index);
       continue;
     }
     
     // Выводим информацию о состоянии сетевого интерфейса
-    Print(L"Network Interface %d State: %d\n", Index, Snp->Mode->State);
+    PrintInfo(L"Network Interface %d State: %d\n", Index, Snp->Mode->State);
     
     // Выводим информацию о MAC-адресе
-    Print(L"Network Interface %d MAC: ", Index);
+    PrintInfo(L"Network Interface %d MAC: ", Index);
     
     // Преобразуем бинарный MAC-адрес в строку
     FormatMacAddress(
@@ -1590,11 +1744,11 @@ CheckMacAddressAgainstNetworkDevices (
     );
     
     // Выводим MAC-адрес
-    Print(L"%a\n", CurrentMacStr);
+    PrintInfo(L"%a\n", CurrentMacStr);
     
     // Сравниваем MAC-адреса
     if (CompareMacAddresses(MacString, CurrentMacStr)) {
-      Print(L"MAC MATCH FOUND for interface %d!\n", Index);
+      PrintSuccess(L"MAC MATCH FOUND for interface %d!\n", Index);
       Found = TRUE;
       
       // Если запрошено имя устройства, получаем его
@@ -1680,13 +1834,13 @@ CheckSerialNumber (
             );
             
   if (EFI_ERROR (Status)) {
-    Print (L"Error: Failed to get Serial Number from variable '%s': %r\n", SerialVarName, Status);
+    PrintError (L"Error: Failed to get Serial Number from variable '%s': %r\n", SerialVarName, Status);
     return FALSE;
   }
   
   // Для информации, выводим GUID найденной переменной, если GUID не был указан явно
   if (SerialVarGuid == NULL) {
-    Print (L"Found variable '%s' with GUID: %08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X\n",
+    PrintInfo (L"Found variable '%s' with GUID: %08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X\n",
            SerialVarName,
            FoundGuid.Data1, FoundGuid.Data2, FoundGuid.Data3,
            FoundGuid.Data4[0], FoundGuid.Data4[1], FoundGuid.Data4[2],
@@ -1712,33 +1866,33 @@ CheckSerialNumber (
   // Получаем серийный номер системы из SMBIOS
   Status = GetSystemSerialNumber(SystemSn, MAX_BUFFER_SIZE);
   if (!EFI_ERROR(Status)) {
-    Print(L"System Serial Number from SMBIOS: %s\n", SystemSn);
+    PrintInfo(L"System Serial Number from SMBIOS: %s\n", SystemSn);
     
     // Сравниваем с целевым серийным номером
     if (StrCmp(SystemSn, SnString) == 0) {
-      Print(L"System Serial Number matches the target value.\n");
+      PrintSuccess(L"System Serial Number matches the target value.\n");
       SnMatches = TRUE;
     } else {
-      Print(L"System Serial Number does NOT match the target value.\n");
+      PrintError(L"System Serial Number does NOT match the target value.\n");
     }
   } else {
-    Print(L"Warning: Could not retrieve System Serial Number from SMBIOS.\n");
+    PrintWarning(L"Warning: Could not retrieve System Serial Number from SMBIOS.\n");
   }
   
   // Получаем серийный номер материнской платы из SMBIOS
   Status = GetBaseBoardSerialNumber(BaseBoardSn, MAX_BUFFER_SIZE);
   if (!EFI_ERROR(Status)) {
-    Print(L"Baseboard Serial Number from SMBIOS: %s\n", BaseBoardSn);
+    PrintInfo(L"Baseboard Serial Number from SMBIOS: %s\n", BaseBoardSn);
     
     // Сравниваем с целевым серийным номером
     if (StrCmp(BaseBoardSn, SnString) == 0) {
-      Print(L"Baseboard Serial Number matches the target value.\n");
+      PrintSuccess(L"Baseboard Serial Number matches the target value.\n");
       SnMatches = TRUE;
     } else {
-      Print(L"Baseboard Serial Number does NOT match the target value.\n");
+      PrintError(L"Baseboard Serial Number does NOT match the target value.\n");
     }
   } else {
-    Print(L"Warning: Could not retrieve Baseboard Serial Number from SMBIOS.\n");
+    PrintWarning(L"Warning: Could not retrieve Baseboard Serial Number from SMBIOS.\n");
   }
   
   if (SnVarData != NULL) {
@@ -1747,6 +1901,7 @@ CheckSerialNumber (
   
   return SnMatches;
 }
+
 /**
   Проверяет серийный номер и MAC-адрес, перепрошивает при необходимости.
   
@@ -1776,9 +1931,9 @@ CheckAndFlashValues (
   EFI_INPUT_KEY  Key;                       // Для ожидания нажатия клавиши
   
   if (Config->CheckOnly) {
-    Print (L"Starting Serial Number and MAC verification (Check-Only Mode)...\n\n");
+    PrintInfo (L"Starting Serial Number and MAC verification (Check-Only Mode)...\n\n");
   } else {
-    Print (L"Starting Serial Number and MAC verification...\n\n");
+    PrintInfo (L"Starting Serial Number and MAC verification...\n\n");
   }
   
   // Проверяем, нужно ли проверять серийный номер
@@ -1793,7 +1948,7 @@ CheckAndFlashValues (
               );
               
     if (EFI_ERROR (Status)) {
-      Print (L"Error: Failed to get Serial Number from variable '%s': %r\n", Config->SerialVarName, Status);
+      PrintError (L"Error: Failed to get Serial Number from variable '%s': %r\n", Config->SerialVarName, Status);
       return Status;
     }
     
@@ -1801,14 +1956,14 @@ CheckAndFlashValues (
     if (Config->SerialVarGuid == NULL) {
       Config->SerialVarGuid = AllocateZeroPool(sizeof(EFI_GUID));
       if (Config->SerialVarGuid == NULL) {
-        Print(L"Error: Failed to allocate memory for GUID\n");
+        PrintError(L"Error: Failed to allocate memory for GUID\n");
         FreePool(SnVarData);
         return EFI_OUT_OF_RESOURCES;
       }
       CopyMem(Config->SerialVarGuid, &FoundGuid, sizeof(EFI_GUID));
       SerialGuidAllocated = TRUE;
       
-      Print(L"Found variable '%s' with GUID: %08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X\n",
+      PrintInfo(L"Found variable '%s' with GUID: %08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X\n",
             Config->SerialVarName,
             Config->SerialVarGuid->Data1, Config->SerialVarGuid->Data2, Config->SerialVarGuid->Data3,
             Config->SerialVarGuid->Data4[0], Config->SerialVarGuid->Data4[1], Config->SerialVarGuid->Data4[2],
@@ -1831,7 +1986,7 @@ CheckAndFlashValues (
       SnString[MIN(SnVarSize, MAX_BUFFER_SIZE-1)] = 0;
     }
     
-    Print (L"Target Serial Number from EFI variable '%s': %s\n", 
+    PrintInfo (L"Target Serial Number from EFI variable '%s': %s\n", 
            Config->SerialVarName, SnString);
     
     // Проверяем серийные номера в SMBIOS
@@ -1839,7 +1994,7 @@ CheckAndFlashValues (
   } else {
     // Если не проверяем SN, считаем его совпадающим
     SnMatches = TRUE;
-    Print (L"Serial Number check skipped.\n");
+    PrintInfo (L"Serial Number check skipped.\n");
   }
   
   // Проверяем, нужно ли проверять MAC-адрес
@@ -1854,7 +2009,7 @@ CheckAndFlashValues (
               );
               
     if (EFI_ERROR (Status)) {
-      Print (L"Error: Failed to get MAC Address from variable '%s': %r\n", Config->MacVarName, Status);
+      PrintError (L"Error: Failed to get MAC Address from variable '%s': %r\n", Config->MacVarName, Status);
       
       // Если SN не прошит и не совпадает, попробуем прошить его независимо от MAC
       if (Config->CheckSn && !SnMatches && !Config->CheckOnly) {
@@ -1875,7 +2030,7 @@ CheckAndFlashValues (
     if (Config->MacVarGuid == NULL) {
       Config->MacVarGuid = AllocateZeroPool(sizeof(EFI_GUID));
       if (Config->MacVarGuid == NULL) {
-        Print(L"Error: Failed to allocate memory for GUID\n");
+        PrintError(L"Error: Failed to allocate memory for GUID\n");
         if (SnVarData != NULL) {
           FreePool(SnVarData);
         }
@@ -1888,7 +2043,7 @@ CheckAndFlashValues (
       CopyMem(Config->MacVarGuid, &FoundGuid, sizeof(EFI_GUID));
       MacGuidAllocated = TRUE;
       
-      Print(L"Found variable '%s' with GUID: %08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X\n",
+      PrintInfo(L"Found variable '%s' with GUID: %08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X\n",
             Config->MacVarName,
             Config->MacVarGuid->Data1, Config->MacVarGuid->Data2, Config->MacVarGuid->Data3,
             Config->MacVarGuid->Data4[0], Config->MacVarGuid->Data4[1], Config->MacVarGuid->Data4[2],
@@ -1897,7 +2052,7 @@ CheckAndFlashValues (
     }
     
     // Выводим целевой MAC-адрес
-    Print (L"Target MAC Address from EFI variable: ");
+    PrintInfo (L"Target MAC Address from EFI variable: ");
     PrintMacAddress(MacString);
     
     // Проверяем, совпадает ли MAC-адрес с каким-либо MAC-адресом сетевой карты
@@ -1909,28 +2064,34 @@ CheckAndFlashValues (
                    );
                    
     if (MacMatches) {
-      Print (L"MAC Address matches the network interface: %s\n", MacDeviceName);
+      PrintSuccess (L"MAC Address matches the network interface: %s\n", MacDeviceName);
     } else {
-      Print (L"MAC Address does NOT match any network interface in the system.\n");
+      PrintError (L"MAC Address does NOT match any network interface in the system.\n");
     }
     
   } else {
     // Если не проверяем MAC, считаем его совпадающим
     MacMatches = TRUE;
-    Print (L"MAC Address check skipped.\n");
+    PrintInfo (L"MAC Address check skipped.\n");
   }
   
   // Если работаем в режиме только проверки, выводим результат и завершаем работу
   if (Config->CheckOnly) {
     // Выводим итоговую информацию о проверке
-    Print (L"\n=== Check Results ===\n");
+    PrintInfo (L"\n=== Check Results ===\n");
     if (Config->CheckSn) {
-      Print (L"Serial Number: %s\n", SnMatches ? L"MATCH" : L"MISMATCH");
+      if (SnMatches) {
+        PrintSuccess (L"Serial Number: MATCH\n");
+      } else {
+        PrintError (L"Serial Number: MISMATCH\n");
+      }
     }
     if (Config->CheckMac) {
-      Print (L"MAC Address: %s\n", MacMatches ? L"MATCH" : L"MISMATCH");
       if (MacMatches) {
-        Print (L"Matching Network Interface: %s\n", MacDeviceName);
+        PrintSuccess (L"MAC Address: MATCH\n");
+        PrintInfo (L"Matching Network Interface: %s\n", MacDeviceName);
+      } else {
+        PrintError (L"MAC Address: MISMATCH\n");
       }
     }
     
@@ -1950,14 +2111,14 @@ CheckAndFlashValues (
   
   // Если оба значения совпадают, ничего не делаем
   if (SnMatches && MacMatches) {
-    Print (L"\n=== Verification Results ===\n");
-    Print (L"Serial Number: MATCH\n");
-    Print (L"MAC Address: MATCH\n");
-    Print (L"\nSuccess: All values match the expected values.\n");
+    PrintInfo (L"\n=== Verification Results ===\n");
+    PrintSuccess (L"Serial Number: MATCH\n");
+    PrintSuccess (L"MAC Address: MATCH\n");
+    PrintSuccess (L"\nSuccess: All values match the expected values.\n");
     
     // Если указан флаг --pw, выключаем систему
     if (Config->PowerDown) {
-      Print (L"Power down flag is set. Shutting down system...\n");
+      PrintInfo (L"Power down flag is set.\n");
       if (SnVarData != NULL) {
         FreePool (SnVarData);
       }
@@ -1972,7 +2133,7 @@ CheckAndFlashValues (
     }
     
     // Ждем нажатия клавиши перед завершением
-    Print (L"\nPress any key to exit...\n");
+    PrintInfo (L"\nPress any key to exit...\n");
     gBS->WaitForEvent (1, &gST->ConIn->WaitForKey, NULL);
     gST->ConIn->ReadKeyStroke (gST->ConIn, &Key);
     
@@ -1994,11 +2155,11 @@ CheckAndFlashValues (
 FlashSerial:
   // Если серийный номер не совпадает, пытаемся его прошить
   if (!SnMatches && SnVarData != NULL) {
-    Print (L"\nAttempting to flash Serial Number...\n");
+    PrintInfo (L"\nAttempting to flash Serial Number...\n");
     
     // Пытаемся перепрошить серийный номер до 3 раз
     for (RetryCount = 0; RetryCount < 3; RetryCount++) {
-      Print (L"Flashing attempt %d...\n", RetryCount + 1);
+      PrintInfo (L"Flashing attempt %d...\n", RetryCount + 1);
       
       // Запускаем AMIDEEFIx64.efi через Shell
       Status = RunAmideefi(
@@ -2011,26 +2172,30 @@ FlashSerial:
         SnMatches = CheckSerialNumber(Config->SerialVarName, Config->SerialVarGuid);
         
         if (SnMatches) {
-          Print (L"Serial Number was successfully flashed!\n");
+          PrintSuccess (L"Serial Number was successfully flashed!\n");
           SnFlashed = TRUE;
           break;  // Прерываем цикл, так как серийник успешно прошит
         }
         
-        Print (L"Failed to verify flashed Serial Number. Retrying...\n");
+        PrintError (L"Failed to verify flashed Serial Number. Retrying...\n");
       } else {
-        Print (L"Failed to run AMIDEEFIx64.efi. Error: %r\n", Status);
+        PrintError (L"Failed to run AMIDEEFIx64.efi. Error: %r\n", Status);
       }
     }
     
     // Если не удалось прошить серийный номер после 3 попыток
     if (!SnFlashed) {
-      Print (L"\nCRITICAL ERROR: Failed to flash Serial Number after 3 attempts!\n");
+      PrintError (L"\nCRITICAL ERROR: Failed to flash Serial Number after 3 attempts!\n");
       
       // Выводим итоговую информацию о проверке
-      Print (L"\n=== Verification Results ===\n");
-      Print (L"Serial Number: MISMATCH (Failed to flash)\n");
+      PrintInfo (L"\n=== Verification Results ===\n");
+      PrintError (L"Serial Number: MISMATCH (Failed to flash)\n");
       if (Config->CheckMac) {
-        Print (L"MAC Address: %s\n", MacMatches ? L"MATCH" : L"MISMATCH");
+        if (MacMatches) {
+          PrintSuccess (L"MAC Address: MATCH\n");
+        } else {
+          PrintError (L"MAC Address: MISMATCH\n");
+        }
       }
       
       // Если включен флаг выключения, выключаем систему
@@ -2049,7 +2214,7 @@ FlashSerial:
       }
       
       // Ждем нажатия клавиши перед завершением
-      Print (L"\nPress any key to exit...\n");
+      PrintInfo (L"\nPress any key to exit...\n");
       gBS->WaitForEvent (1, &gST->ConIn->WaitForKey, NULL);
       gST->ConIn->ReadKeyStroke (gST->ConIn, &Key);
       
@@ -2068,29 +2233,35 @@ FlashSerial:
   }
   
   // Выводим итоговую информацию о проверке
-  Print (L"\n=== Verification Results ===\n");
+  PrintInfo (L"\n=== Verification Results ===\n");
   if (Config->CheckSn) {
-    Print (L"Serial Number: %s", SnMatches ? L"MATCH" : L"MISMATCH");
-    if (SnFlashed) {
-      Print (L" (Successfully flashed)\n");
+    if (SnMatches) {
+      PrintSuccess (L"Serial Number: MATCH");
+      if (SnFlashed) {
+        PrintSuccess (L" (Successfully flashed)\n");
+      } else {
+        PrintSuccess (L"\n");
+      }
     } else {
-      Print (L"\n");
+      PrintError (L"Serial Number: MISMATCH\n");
     }
   }
   if (Config->CheckMac) {
-    Print (L"MAC Address: %s\n", MacMatches ? L"MATCH" : L"MISMATCH");
     if (MacMatches) {
-      Print (L"Matching Network Interface: %s\n", MacDeviceName);
+      PrintSuccess (L"MAC Address: MATCH\n");
+      PrintInfo (L"Matching Network Interface: %s\n", MacDeviceName);
+    } else {
+      PrintError (L"MAC Address: MISMATCH\n");
     }
   }
   
   // Если после прошивки SN все значения совпадают
   if (SnFlashed && SnMatches && MacMatches) {
-    Print (L"\nSuccess: All values match the expected values after flashing.\n");
+    PrintSuccess (L"\nSuccess: All values match the expected values after flashing.\n");
     
     // Если указан флаг --pw, выключаем систему
     if (Config->PowerDown) {
-      Print (L"Power down flag is set.\n");
+      PrintInfo (L"Power down flag is set.\n");
       if (SnVarData != NULL) {
         FreePool (SnVarData);
       }
@@ -2105,7 +2276,7 @@ FlashSerial:
     }
     
     // Ждем нажатия клавиши перед завершением
-    Print (L"\nPress any key to exit...\n");
+    PrintInfo (L"\nPress any key to exit...\n");
     gBS->WaitForEvent (1, &gST->ConIn->WaitForKey, NULL);
     gST->ConIn->ReadKeyStroke (gST->ConIn, &Key);
     
@@ -2124,9 +2295,9 @@ FlashSerial:
   
   // После прошивки SN, если MAC не совпадает, перезагружаемся в систему (если включен флаг --pw)
   if (SnMatches && !MacMatches) {
-    Print (L"\nSerial Number is correct, but MAC Address needs to be updated.\n");
+    PrintInfo (L"\nSerial Number is correct, but MAC Address needs to be updated.\n");
     if (Config->PowerDown) {
-      Print (L"Rebooting to system for MAC Address update...\n");
+      PrintInfo (L"Rebooting to system for MAC Address update...\n");
       if (SnVarData != NULL) {
         FreePool (SnVarData);
       }
@@ -2139,10 +2310,10 @@ FlashSerial:
       }
       return RebootToBoot();
     } else {
-      Print (L"Use --pw flag to reboot and update MAC.\n");
+      PrintWarning (L"Use --pw flag to reboot and update MAC.\n");
       
       // Ждем нажатия клавиши перед завершением
-      Print (L"\nPress any key to exit...\n");
+      PrintInfo (L"\nPress any key to exit...\n");
       gBS->WaitForEvent (1, &gST->ConIn->WaitForKey, NULL);
       gST->ConIn->ReadKeyStroke (gST->ConIn, &Key);
     }
@@ -2162,29 +2333,6 @@ FlashSerial:
 }
 
 /**
-  Выключает систему. Ожидает нажатия клавиши перед выключением.
-  
-  @retval EFI_SUCCESS   Команда выключения отправлена
-  @retval другое        Ошибка при отправке команды выключения
-**/
-EFI_STATUS
-PowerDownSystem (
-  VOID
-  )
-{
-  EFI_INPUT_KEY Key;
-  
-  Print (L"Press any key to shut down the system...\n");
-  gBS->WaitForEvent (1, &gST->ConIn->WaitForKey, NULL);
-  gST->ConIn->ReadKeyStroke (gST->ConIn, &Key);
-  
-  Print (L"Shutting down system...\n");
-  gRT->ResetSystem (EfiResetShutdown, EFI_SUCCESS, 0, NULL);
-  
-  // Этот код не должен выполниться, но возвращаем успешный статус на всякий случай
-  return EFI_SUCCESS;
-}
-/**
   Функция вывода справки по использованию.
 **/
 VOID
@@ -2192,30 +2340,30 @@ PrintUsage (
   VOID
   )
 {
-  Print (L"SNSniff - UEFI Serial Number and MAC Address Tool\n");
-  Print (L"Usage: snsniff [variable_name] [options]\n\n");
-  Print (L"Standard Options:\n");
-  Print (L"  --guid GUID      : Specify GUID prefix or full GUID\n");
-  Print (L"  --rawtype TYPE   : Output only in specified format (hex, ascii, ucs)\n\n");
+  PrintInfo (L"SNSniff - UEFI Serial Number and MAC Address Tool\n");
+  PrintInfo (L"Usage: snsniff [variable_name] [options]\n\n");
+  PrintInfo (L"Standard Options:\n");
+  PrintInfo (L"  --guid GUID      : Specify GUID prefix or full GUID\n");
+  PrintInfo (L"  --rawtype TYPE   : Output only in specified format (hex, ascii, ucs)\n\n");
   
-  Print (L"Verification and Flashing Options:\n");
-  Print (L"  --check          : Verify and flash if needed the SN and MAC\n");
-  Print (L"  --check-only     : Verify but DO NOT flash SN and MAC (just report status)\n");
-  Print (L"  --vsn VARNAME    : Name of EFI variable containing the serial number to flash\n");
-  Print (L"  --vmac VARNAME   : Name of EFI variable containing the MAC address to check\n");
-  Print (L"  --amid PATH      : Path to AMIDEEFIx64.efi (default: current directory)\n");
-  Print (L"  --pw             : Power down/reboot system after operation (if needed)\n\n");
+  PrintInfo (L"Verification and Flashing Options:\n");
+  PrintInfo (L"  --check          : Verify and flash if needed the SN and MAC\n");
+  PrintInfo (L"  --check-only     : Verify but DO NOT flash SN and MAC (just report status)\n");
+  PrintInfo (L"  --vsn VARNAME    : Name of EFI variable containing the serial number to flash\n");
+  PrintInfo (L"  --vmac VARNAME   : Name of EFI variable containing the MAC address to check\n");
+  PrintInfo (L"  --amid PATH      : Path to AMIDEEFIx64.efi (default: current directory)\n");
+  PrintInfo (L"  --pw             : Power down/reboot system after operation (if needed)\n\n");
   
-  Print (L"System Information:\n");
-  Print (L"  --board-info     : Display detailed information about the motherboard\n\n");
+  PrintInfo (L"System Information:\n");
+  PrintInfo (L"  --board-info     : Display detailed information about the motherboard\n\n");
   
-  Print (L"Examples:\n");
-  Print (L"  snsniff SerialNumber\n");
-  Print (L"  snsniff SerialNumber --guid 12345678\n");
-  Print (L"  snsniff --check --vsn SerialToFlash --vmac MacToCheck\n");
-  Print (L"  snsniff --check-only --vsn SerialToFlash\n");
-  Print (L"  snsniff --check --vsn SerialToFlash --vmac MacToCheck --pw\n");
-  Print (L"  snsniff --board-info\n");
+  PrintInfo (L"Examples:\n");
+  PrintInfo (L"  snsniff SerialNumber\n");
+  PrintInfo (L"  snsniff SerialNumber --guid 12345678\n");
+  PrintInfo (L"  snsniff --check --vsn SerialToFlash --vmac MacToCheck\n");
+  PrintInfo (L"  snsniff --check-only --vsn SerialToFlash\n");
+  PrintInfo (L"  snsniff --check --vsn SerialToFlash --vmac MacToCheck --pw\n");
+  PrintInfo (L"  snsniff --board-info\n");
 }
 
 /**
@@ -2262,7 +2410,7 @@ ShellAppMain (
   if (Argc == 1) {
     // Нет аргументов, используем значения по умолчанию
     PrintUsage();
-    Print (L"\nUsing default values...\n\n");
+    PrintInfo (L"\nUsing default values...\n\n");
   } else {
     // Первый аргумент - имя переменной (если не опция)
     if (Argv[1][0] != L'-') {
@@ -2280,7 +2428,7 @@ ShellAppMain (
           GuidPrefix = Argv[Index + 1];
           Index++; // Пропускаем значение опции
         } else {
-          Print (L"Error: Missing GUID value\n");
+          PrintError (L"Error: Missing GUID value\n");
           PrintUsage();
           return EFI_INVALID_PARAMETER;
         }
@@ -2294,13 +2442,13 @@ ShellAppMain (
           } else if (StrCmp (Argv[Index + 1], L"ucs") == 0) {
             OutputType = OUTPUT_UCS;
           } else {
-            Print (L"Error: Invalid rawtype value. Must be 'hex', 'ascii', or 'ucs'\n");
+            PrintError (L"Error: Invalid rawtype value. Must be 'hex', 'ascii', or 'ucs'\n");
             PrintUsage();
             return EFI_INVALID_PARAMETER;
           }
           Index++; // Пропускаем значение опции
         } else {
-          Print (L"Error: Missing rawtype value\n");
+          PrintError (L"Error: Missing rawtype value\n");
           PrintUsage();
           return EFI_INVALID_PARAMETER;
         }
@@ -2320,7 +2468,7 @@ ShellAppMain (
           Config.CheckSn = TRUE;
           Index++; // Пропускаем значение опции
         } else {
-          Print (L"Error: Missing serial variable name\n");
+          PrintError (L"Error: Missing serial variable name\n");
           PrintUsage();
           return EFI_INVALID_PARAMETER;
         }
@@ -2331,7 +2479,7 @@ ShellAppMain (
           Config.CheckMac = TRUE;
           Index++; // Пропускаем значение опции
         } else {
-          Print (L"Error: Missing MAC variable name\n");
+          PrintError (L"Error: Missing MAC variable name\n");
           PrintUsage();
           return EFI_INVALID_PARAMETER;
         }
@@ -2341,7 +2489,7 @@ ShellAppMain (
           Config.AmideEfiPath = Argv[Index + 1];
           Index++; // Пропускаем значение опции
         } else {
-          Print (L"Error: Missing AMIDE EFI path\n");
+          PrintError (L"Error: Missing AMIDE EFI path\n");
           PrintUsage();
           return EFI_INVALID_PARAMETER;
         }
@@ -2356,7 +2504,7 @@ ShellAppMain (
   if (GuidPrefix != NULL) {
     EFI_GUID *TempGuid = AllocateZeroPool(sizeof(EFI_GUID));
     if (TempGuid == NULL) {
-      Print (L"Error: Failed to allocate memory for GUID\n");
+      PrintError (L"Error: Failed to allocate memory for GUID\n");
       return EFI_OUT_OF_RESOURCES;
     }
     
@@ -2364,7 +2512,7 @@ ShellAppMain (
       Config.SerialVarGuid = TempGuid;
       Config.MacVarGuid = TempGuid;
     } else {
-      Print (L"Error: Invalid GUID prefix '%s'\n", GuidPrefix);
+      PrintError (L"Error: Invalid GUID prefix '%s'\n", GuidPrefix);
       FreePool(TempGuid);
       return EFI_INVALID_PARAMETER;
     }
@@ -2384,7 +2532,7 @@ ShellAppMain (
   if (CheckMode || CheckOnlyMode) {
     // Режим проверки и перепрошивки или только проверки
     if (!Config.CheckSn && !Config.CheckMac) {
-      Print (L"Error: You must specify at least one value to check (--vsn or --vmac)\n");
+      PrintError (L"Error: You must specify at least one value to check (--vsn or --vmac)\n");
       PrintUsage();
       // Освобождаем выделенную память для GUID, если была выделена
       if (GuidPrefix != NULL && Config.SerialVarGuid != NULL) {
@@ -2413,7 +2561,7 @@ ShellAppMain (
   // Ждем нажатия клавиши, если не используется rawtype
   if (OutputType == OUTPUT_ALL) {
     EFI_INPUT_KEY Key;
-    Print (L"\nPress any key to exit...\n");
+    PrintInfo (L"\nPress any key to exit...\n");
     gBS->WaitForEvent (1, &gST->ConIn->WaitForKey, NULL);
     gST->ConIn->ReadKeyStroke (gST->ConIn, &Key);
   }
@@ -2441,13 +2589,13 @@ UefiMain (
   // Инициализируем библиотеки Shell для обработки аргументов
   Status = ShellInitialize();
   if (EFI_ERROR(Status)) {
-    Print(L"Error: Failed to initialize Shell libraries\n");
+    PrintError(L"Error: Failed to initialize Shell libraries\n");
     return Status;
   }
   
   // Проверяем, доступен ли протокол параметров Shell
   if (gEfiShellParametersProtocol == NULL) {
-    Print(L"Error: Shell Parameters Protocol is not available\n");
+    PrintError(L"Error: Shell Parameters Protocol is not available\n");
     return EFI_NOT_FOUND;
   }
   
