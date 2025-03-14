@@ -77,6 +77,7 @@ typedef struct {
   BOOLEAN   CheckSn;                // Флаг проверки SN
   BOOLEAN   CheckMac;               // Флаг проверки MAC
   BOOLEAN   CheckOnly;              // Флаг режима только проверки без прошивки
+  BOOLEAN   PowerDown;              // Флаг выключения/перезагрузки системы
   EFI_GUID  *SerialVarGuid;         // GUID для переменной с серийным номером
   EFI_GUID  *MacVarGuid;            // GUID для переменной с MAC-адресом
 } CHECK_CONFIG;
@@ -84,6 +85,11 @@ typedef struct {
 // Прототипы функций
 EFI_STATUS
 RebootToBoot (
+  VOID
+  );
+
+EFI_STATUS
+PowerDownSystem (
   VOID
   );
 
@@ -653,6 +659,7 @@ FindAndPrintVariable (
 
 /**
   Перезагружает систему с загрузкой через BOOTx64.efi.
+  Ожидает нажатия клавиши перед перезагрузкой.
   
   @retval EFI_SUCCESS   Команда перезагрузки отправлена
   @retval другое        Ошибка при отправке команды перезагрузки
@@ -667,6 +674,7 @@ RebootToBoot (
   CHAR16      *BootFileName = L"\\EFI\\BOOT\\BOOTx64.EFI";
   CHAR16      *BootOptionName = L"SNSniffReboot";
   UINT16      BootOrder = 0;
+  EFI_INPUT_KEY Key;
   
   // Устанавливаем загрузочный вариант
   Status = gRT->SetVariable (
@@ -695,6 +703,11 @@ RebootToBoot (
     Print (L"Error: Failed to set boot order\n");
     return Status;
   }
+  
+  // Ждем нажатия клавиши перед перезагрузкой
+  Print (L"Press any key to reboot to BOOTx64.efi...\n");
+  gBS->WaitForEvent (1, &gST->ConIn->WaitForKey, NULL);
+  gST->ConIn->ReadKeyStroke (gST->ConIn, &Key);
   
   // Перезагружаем систему
   Print (L"Rebooting system to BOOTx64.efi...\n");
@@ -1734,7 +1747,6 @@ CheckSerialNumber (
   
   return SnMatches;
 }
-
 /**
   Проверяет серийный номер и MAC-адрес, перепрошивает при необходимости.
   
@@ -1748,18 +1760,20 @@ CheckAndFlashValues (
   IN CHECK_CONFIG  *Config
   )
 {
-  EFI_STATUS  Status;
-  VOID        *SnVarData = NULL;         // Данные из переменной SerialVarName
-  UINTN       SnVarSize = 0;
-  BOOLEAN     SnMatches = FALSE;
-  BOOLEAN     MacMatches = FALSE;
-  UINTN       RetryCount;
-  CHAR16      SnString[MAX_BUFFER_SIZE]; // Строка с серийным номером
-  CHAR8       MacString[MAX_BUFFER_SIZE]; // Строка с MAC-адресом в ASCII
-  CHAR16      MacDeviceName[MAX_BUFFER_SIZE]; // Имя устройства для MAC
-  EFI_GUID    FoundGuid;
-  BOOLEAN     SerialGuidAllocated = FALSE;
-  BOOLEAN     MacGuidAllocated = FALSE;
+  EFI_STATUS     Status;
+  VOID           *SnVarData = NULL;         // Данные из переменной SerialVarName
+  UINTN          SnVarSize = 0;
+  BOOLEAN        SnMatches = FALSE;
+  BOOLEAN        MacMatches = FALSE;
+  UINTN          RetryCount;
+  CHAR16         SnString[MAX_BUFFER_SIZE]; // Строка с серийным номером
+  CHAR8          MacString[MAX_BUFFER_SIZE]; // Строка с MAC-адресом в ASCII
+  CHAR16         MacDeviceName[MAX_BUFFER_SIZE]; // Имя устройства для MAC
+  EFI_GUID       FoundGuid;
+  BOOLEAN        SerialGuidAllocated = FALSE;
+  BOOLEAN        MacGuidAllocated = FALSE;
+  BOOLEAN        SnFlashed = FALSE;         // Флаг успешной прошивки SN
+  EFI_INPUT_KEY  Key;                       // Для ожидания нажатия клавиши
   
   if (Config->CheckOnly) {
     Print (L"Starting Serial Number and MAC verification (Check-Only Mode)...\n\n");
@@ -1842,11 +1856,9 @@ CheckAndFlashValues (
     if (EFI_ERROR (Status)) {
       Print (L"Error: Failed to get MAC Address from variable '%s': %r\n", Config->MacVarName, Status);
       
-      // Если SN не прошит, то пытаемся его прошить независимо от MAC
-      if (SnVarData != NULL) {
-        if (!SnMatches && !Config->CheckOnly) {
-          goto FlashSerial;
-        }
+      // Если SN не прошит и не совпадает, попробуем прошить его независимо от MAC
+      if (Config->CheckSn && !SnMatches && !Config->CheckOnly) {
+        goto FlashSerial;
       }
       
       if (SnVarData != NULL) {
@@ -1910,6 +1922,7 @@ CheckAndFlashValues (
   
   // Если работаем в режиме только проверки, выводим результат и завершаем работу
   if (Config->CheckOnly) {
+    // Выводим итоговую информацию о проверке
     Print (L"\n=== Check Results ===\n");
     if (Config->CheckSn) {
       Print (L"Serial Number: %s\n", SnMatches ? L"MATCH" : L"MISMATCH");
@@ -1935,10 +1948,34 @@ CheckAndFlashValues (
     return (SnMatches && MacMatches) ? EFI_SUCCESS : EFI_DEVICE_ERROR;
   }
   
-FlashSerial:
   // Если оба значения совпадают, ничего не делаем
   if (SnMatches && MacMatches) {
+    Print (L"\n=== Verification Results ===\n");
+    Print (L"Serial Number: MATCH\n");
+    Print (L"MAC Address: MATCH\n");
     Print (L"\nSuccess: All values match the expected values.\n");
+    
+    // Если указан флаг --pw, выключаем систему
+    if (Config->PowerDown) {
+      Print (L"Power down flag is set. Shutting down system...\n");
+      if (SnVarData != NULL) {
+        FreePool (SnVarData);
+      }
+      // Освобождаем память GUID, если была выделена
+      if (SerialGuidAllocated && Config->SerialVarGuid != NULL) {
+        FreePool(Config->SerialVarGuid);
+      }
+      if (MacGuidAllocated && Config->MacVarGuid != NULL) {
+        FreePool(Config->MacVarGuid);
+      }
+      return PowerDownSystem();
+    }
+    
+    // Ждем нажатия клавиши перед завершением
+    Print (L"\nPress any key to exit...\n");
+    gBS->WaitForEvent (1, &gST->ConIn->WaitForKey, NULL);
+    gST->ConIn->ReadKeyStroke (gST->ConIn, &Key);
+    
     if (SnVarData != NULL) {
       FreePool (SnVarData);
     }
@@ -1952,6 +1989,9 @@ FlashSerial:
     return EFI_SUCCESS;
   }
   
+  // В противном случае, начинаем процесс обновления несовпадающих значений
+  
+FlashSerial:
   // Если серийный номер не совпадает, пытаемся его прошить
   if (!SnMatches && SnVarData != NULL) {
     Print (L"\nAttempting to flash Serial Number...\n");
@@ -1968,38 +2008,12 @@ FlashSerial:
                 
       if (!EFI_ERROR (Status)) {
         // Проверяем, был ли серийный номер прошит успешно
-        BOOLEAN NewSnMatches = CheckSerialNumber(Config->SerialVarName, Config->SerialVarGuid);
+        SnMatches = CheckSerialNumber(Config->SerialVarName, Config->SerialVarGuid);
         
-        if (NewSnMatches) {
+        if (SnMatches) {
           Print (L"Serial Number was successfully flashed!\n");
-          
-          // Если MAC не совпадает, нужно перезагрузиться в систему
-          if (!MacMatches) {
-            Print (L"\nMAC Address needs to be updated. Rebooting to system for further updates...\n");
-            if (SnVarData != NULL) {
-              FreePool (SnVarData);
-            }
-            // Освобождаем память GUID, если была выделена
-            if (SerialGuidAllocated && Config->SerialVarGuid != NULL) {
-              FreePool(Config->SerialVarGuid);
-            }
-            if (MacGuidAllocated && Config->MacVarGuid != NULL) {
-              FreePool(Config->MacVarGuid);
-            }
-            return RebootToBoot();
-          }
-          
-          if (SnVarData != NULL) {
-            FreePool (SnVarData);
-          }
-          // Освобождаем память GUID, если была выделена
-          if (SerialGuidAllocated && Config->SerialVarGuid != NULL) {
-            FreePool(Config->SerialVarGuid);
-          }
-          if (MacGuidAllocated && Config->MacVarGuid != NULL) {
-            FreePool(Config->MacVarGuid);
-          }
-          return EFI_SUCCESS;
+          SnFlashed = TRUE;
+          break;  // Прерываем цикл, так как серийник успешно прошит
         }
         
         Print (L"Failed to verify flashed Serial Number. Retrying...\n");
@@ -2008,25 +2022,93 @@ FlashSerial:
       }
     }
     
-    // Не удалось прошить серийный номер после 3 попыток
-    Print (L"\nCRITICAL ERROR: Failed to flash Serial Number after 3 attempts!\n");
-    if (SnVarData != NULL) {
-      FreePool (SnVarData);
+    // Если не удалось прошить серийный номер после 3 попыток
+    if (!SnFlashed) {
+      Print (L"\nCRITICAL ERROR: Failed to flash Serial Number after 3 attempts!\n");
+      
+      // Выводим итоговую информацию о проверке
+      Print (L"\n=== Verification Results ===\n");
+      Print (L"Serial Number: MISMATCH (Failed to flash)\n");
+      if (Config->CheckMac) {
+        Print (L"MAC Address: %s\n", MacMatches ? L"MATCH" : L"MISMATCH");
+      }
+      
+      // Если включен флаг выключения, выключаем систему
+      if (Config->PowerDown) {
+        if (SnVarData != NULL) {
+          FreePool (SnVarData);
+        }
+        // Освобождаем память GUID, если была выделена
+        if (SerialGuidAllocated && Config->SerialVarGuid != NULL) {
+          FreePool(Config->SerialVarGuid);
+        }
+        if (MacGuidAllocated && Config->MacVarGuid != NULL) {
+          FreePool(Config->MacVarGuid);
+        }
+        return PowerDownSystem();
+      }
+      
+      // Ждем нажатия клавиши перед завершением
+      Print (L"\nPress any key to exit...\n");
+      gBS->WaitForEvent (1, &gST->ConIn->WaitForKey, NULL);
+      gST->ConIn->ReadKeyStroke (gST->ConIn, &Key);
+      
+      if (SnVarData != NULL) {
+        FreePool (SnVarData);
+      }
+      // Освобождаем память GUID, если была выделена
+      if (SerialGuidAllocated && Config->SerialVarGuid != NULL) {
+        FreePool(Config->SerialVarGuid);
+      }
+      if (MacGuidAllocated && Config->MacVarGuid != NULL) {
+        FreePool(Config->MacVarGuid);
+      }
+      return EFI_DEVICE_ERROR;
     }
-    // Освобождаем память GUID, если была выделена
-    if (SerialGuidAllocated && Config->SerialVarGuid != NULL) {
-      FreePool(Config->SerialVarGuid);
-    }
-    if (MacGuidAllocated && Config->MacVarGuid != NULL) {
-      FreePool(Config->MacVarGuid);
-    }
-    return EFI_DEVICE_ERROR;
   }
   
-  // Если только MAC-адрес не совпадает, но SN уже прошит
-  if (SnMatches && !MacMatches) {
-    Print (L"\nSerial Number is correct, but MAC Address needs to be updated.\n");
-    Print (L"Rebooting to system for MAC Address update...\n");
+  // Выводим итоговую информацию о проверке
+  Print (L"\n=== Verification Results ===\n");
+  if (Config->CheckSn) {
+    Print (L"Serial Number: %s", SnMatches ? L"MATCH" : L"MISMATCH");
+    if (SnFlashed) {
+      Print (L" (Successfully flashed)\n");
+    } else {
+      Print (L"\n");
+    }
+  }
+  if (Config->CheckMac) {
+    Print (L"MAC Address: %s\n", MacMatches ? L"MATCH" : L"MISMATCH");
+    if (MacMatches) {
+      Print (L"Matching Network Interface: %s\n", MacDeviceName);
+    }
+  }
+  
+  // Если после прошивки SN все значения совпадают
+  if (SnFlashed && SnMatches && MacMatches) {
+    Print (L"\nSuccess: All values match the expected values after flashing.\n");
+    
+    // Если указан флаг --pw, выключаем систему
+    if (Config->PowerDown) {
+      Print (L"Power down flag is set.\n");
+      if (SnVarData != NULL) {
+        FreePool (SnVarData);
+      }
+      // Освобождаем память GUID, если была выделена
+      if (SerialGuidAllocated && Config->SerialVarGuid != NULL) {
+        FreePool(Config->SerialVarGuid);
+      }
+      if (MacGuidAllocated && Config->MacVarGuid != NULL) {
+        FreePool(Config->MacVarGuid);
+      }
+      return PowerDownSystem();
+    }
+    
+    // Ждем нажатия клавиши перед завершением
+    Print (L"\nPress any key to exit...\n");
+    gBS->WaitForEvent (1, &gST->ConIn->WaitForKey, NULL);
+    gST->ConIn->ReadKeyStroke (gST->ConIn, &Key);
+    
     if (SnVarData != NULL) {
       FreePool (SnVarData);
     }
@@ -2037,7 +2119,33 @@ FlashSerial:
     if (MacGuidAllocated && Config->MacVarGuid != NULL) {
       FreePool(Config->MacVarGuid);
     }
-    return RebootToBoot();
+    return EFI_SUCCESS;
+  }
+  
+  // После прошивки SN, если MAC не совпадает, перезагружаемся в систему (если включен флаг --pw)
+  if (SnMatches && !MacMatches) {
+    Print (L"\nSerial Number is correct, but MAC Address needs to be updated.\n");
+    if (Config->PowerDown) {
+      Print (L"Rebooting to system for MAC Address update...\n");
+      if (SnVarData != NULL) {
+        FreePool (SnVarData);
+      }
+      // Освобождаем память GUID, если была выделена
+      if (SerialGuidAllocated && Config->SerialVarGuid != NULL) {
+        FreePool(Config->SerialVarGuid);
+      }
+      if (MacGuidAllocated && Config->MacVarGuid != NULL) {
+        FreePool(Config->MacVarGuid);
+      }
+      return RebootToBoot();
+    } else {
+      Print (L"Use --pw flag to reboot and update MAC.\n");
+      
+      // Ждем нажатия клавиши перед завершением
+      Print (L"\nPress any key to exit...\n");
+      gBS->WaitForEvent (1, &gST->ConIn->WaitForKey, NULL);
+      gST->ConIn->ReadKeyStroke (gST->ConIn, &Key);
+    }
   }
   
   if (SnVarData != NULL) {
@@ -2053,6 +2161,29 @@ FlashSerial:
   return EFI_SUCCESS;
 }
 
+/**
+  Выключает систему. Ожидает нажатия клавиши перед выключением.
+  
+  @retval EFI_SUCCESS   Команда выключения отправлена
+  @retval другое        Ошибка при отправке команды выключения
+**/
+EFI_STATUS
+PowerDownSystem (
+  VOID
+  )
+{
+  EFI_INPUT_KEY Key;
+  
+  Print (L"Press any key to shut down the system...\n");
+  gBS->WaitForEvent (1, &gST->ConIn->WaitForKey, NULL);
+  gST->ConIn->ReadKeyStroke (gST->ConIn, &Key);
+  
+  Print (L"Shutting down system...\n");
+  gRT->ResetSystem (EfiResetShutdown, EFI_SUCCESS, 0, NULL);
+  
+  // Этот код не должен выполниться, но возвращаем успешный статус на всякий случай
+  return EFI_SUCCESS;
+}
 /**
   Функция вывода справки по использованию.
 **/
@@ -2072,7 +2203,8 @@ PrintUsage (
   Print (L"  --check-only     : Verify but DO NOT flash SN and MAC (just report status)\n");
   Print (L"  --vsn VARNAME    : Name of EFI variable containing the serial number to flash\n");
   Print (L"  --vmac VARNAME   : Name of EFI variable containing the MAC address to check\n");
-  Print (L"  --amid PATH      : Path to AMIDEEFIx64.efi (default: current directory)\n\n");
+  Print (L"  --amid PATH      : Path to AMIDEEFIx64.efi (default: current directory)\n");
+  Print (L"  --pw             : Power down/reboot system after operation (if needed)\n\n");
   
   Print (L"System Information:\n");
   Print (L"  --board-info     : Display detailed information about the motherboard\n\n");
@@ -2082,6 +2214,7 @@ PrintUsage (
   Print (L"  snsniff SerialNumber --guid 12345678\n");
   Print (L"  snsniff --check --vsn SerialToFlash --vmac MacToCheck\n");
   Print (L"  snsniff --check-only --vsn SerialToFlash\n");
+  Print (L"  snsniff --check --vsn SerialToFlash --vmac MacToCheck --pw\n");
   Print (L"  snsniff --board-info\n");
 }
 
@@ -2123,6 +2256,7 @@ ShellAppMain (
   Config.CheckSn = FALSE;
   Config.CheckMac = FALSE;
   Config.CheckOnly = FALSE;
+  Config.PowerDown = FALSE;     // По умолчанию не выключаем/перезагружаем систему
   
   // Проверяем аргументы командной строки
   if (Argc == 1) {
@@ -2211,6 +2345,9 @@ ShellAppMain (
           PrintUsage();
           return EFI_INVALID_PARAMETER;
         }
+      } else if (StrCmp (Argv[Index], L"--pw") == 0) {
+        // Включаем флаг выключения/перезагрузки системы
+        Config.PowerDown = TRUE;
       }
     }
   }
