@@ -177,6 +177,7 @@ PrintError (
 {
   VA_LIST  Marker;
   UINTN    OriginalAttribute;
+  CHAR16   Buffer[1024];
   
   // Сохраняем оригинальный атрибут
   OriginalAttribute = gST->ConOut->Mode->Attribute;
@@ -184,10 +185,13 @@ PrintError (
   // Устанавливаем красный цвет текста
   gST->ConOut->SetAttribute (gST->ConOut, TEXT_ATTR_ERROR);
   
-  // Выводим текст
+  // Форматируем строку в буфер
   VA_START (Marker, Format);
-  VPrint (Format, Marker);
+  UnicodeVSPrint (Buffer, sizeof(Buffer), Format, Marker);
   VA_END (Marker);
+  
+  // Выводим отформатированную строку
+  Print (L"%s", Buffer);
   
   // Восстанавливаем оригинальный атрибут
   gST->ConOut->SetAttribute (gST->ConOut, OriginalAttribute);
@@ -201,6 +205,7 @@ PrintSuccess (
 {
   VA_LIST  Marker;
   UINTN    OriginalAttribute;
+  CHAR16   Buffer[1024];
   
   // Сохраняем оригинальный атрибут
   OriginalAttribute = gST->ConOut->Mode->Attribute;
@@ -208,10 +213,13 @@ PrintSuccess (
   // Устанавливаем зеленый цвет текста
   gST->ConOut->SetAttribute (gST->ConOut, TEXT_ATTR_SUCCESS);
   
-  // Выводим текст
+  // Форматируем строку в буфер
   VA_START (Marker, Format);
-  VPrint (Format, Marker);
+  UnicodeVSPrint (Buffer, sizeof(Buffer), Format, Marker);
   VA_END (Marker);
+  
+  // Выводим отформатированную строку
+  Print (L"%s", Buffer);
   
   // Восстанавливаем оригинальный атрибут
   gST->ConOut->SetAttribute (gST->ConOut, OriginalAttribute);
@@ -225,6 +233,7 @@ PrintInfo (
 {
   VA_LIST  Marker;
   UINTN    OriginalAttribute;
+  CHAR16   Buffer[1024];
   
   // Сохраняем оригинальный атрибут
   OriginalAttribute = gST->ConOut->Mode->Attribute;
@@ -232,10 +241,13 @@ PrintInfo (
   // Устанавливаем белый цвет текста
   gST->ConOut->SetAttribute (gST->ConOut, TEXT_ATTR_INFO);
   
-  // Выводим текст
+  // Форматируем строку в буфер
   VA_START (Marker, Format);
-  VPrint (Format, Marker);
+  UnicodeVSPrint (Buffer, sizeof(Buffer), Format, Marker);
   VA_END (Marker);
+  
+  // Выводим отформатированную строку
+  Print (L"%s", Buffer);
   
   // Восстанавливаем оригинальный атрибут
   gST->ConOut->SetAttribute (gST->ConOut, OriginalAttribute);
@@ -249,6 +261,7 @@ PrintWarning (
 {
   VA_LIST  Marker;
   UINTN    OriginalAttribute;
+  CHAR16   Buffer[1024];
   
   // Сохраняем оригинальный атрибут
   OriginalAttribute = gST->ConOut->Mode->Attribute;
@@ -256,10 +269,13 @@ PrintWarning (
   // Устанавливаем желтый цвет текста
   gST->ConOut->SetAttribute (gST->ConOut, TEXT_ATTR_WARNING);
   
-  // Выводим текст
+  // Форматируем строку в буфер
   VA_START (Marker, Format);
-  VPrint (Format, Marker);
+  UnicodeVSPrint (Buffer, sizeof(Buffer), Format, Marker);
   VA_END (Marker);
+  
+  // Выводим отформатированную строку
+  Print (L"%s", Buffer);
   
   // Восстанавливаем оригинальный атрибут
   gST->ConOut->SetAttribute (gST->ConOut, OriginalAttribute);
